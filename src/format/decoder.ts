@@ -26,7 +26,7 @@ export class WeatherDataDecoder {
    */
   decode(script: Script): WeatherData {
     const chunks = script.chunks;
-    let index = 0;
+    let index = 2;
 
     // Read and validate version
     const version = this.readNumber(chunks[index++]);

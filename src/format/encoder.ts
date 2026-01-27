@@ -3,6 +3,7 @@ import { WeatherData } from './types';
 import { FIELD_SCHEMA } from './schema';
 import { VERSION, FLOAT_SCALE } from './constants';
 import { encodeFloat } from '../utils/float-encoder';
+import { OP } from '@bsv/sdk';
 
 /**
  * Encoder for weather data into Bitcoin Script format.
@@ -28,6 +29,10 @@ export class WeatherDataEncoder {
    */
   encode(data: WeatherData): Script {
     const script = new Script();
+
+    // data only marker for now
+    script.writeOpCode(OP.OP_FALSE)
+    script.writeOpCode(OP.OP_RETURN)
 
     // Push version byte
     script.writeNumber(this.version);
