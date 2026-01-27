@@ -36,6 +36,7 @@ export async function createWeatherTransaction(records: IWeatherRecord[]): Promi
     basket: 'funding',
     include: 'entire transactions',
     limit: 1,
+    includeCustomInstructions: true,
   });
 
   if (fundingOutputs.length === 0) {

@@ -50,9 +50,7 @@ export function createHashPuzzle(): HashPuzzle {
  * // Use this unlocking script when spending the hash puzzle output
  */
 export function createUnlockingScript(preimage: string): string {
-  const script = new Script();
-  script.writeBin(Array.from(Buffer.from(preimage, 'hex')));
-  return script.toHex();
+  return '20' + preimage;
 }
 
 /**
