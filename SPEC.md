@@ -1,5 +1,5 @@
 # Stack
-Use @bsv/sdk and @bsv/wallet-toolbox npm packages to get the BSV stuff done. https://fast.brc.dev/llm-training-guide.txt is a good reference for patterns to use. The service should have a SERVER_PRIVATE_KEY defined as an env variable. This is the basis of the Server Wallet which will connect to a wallet storage provider at WALLET_STORAGE_URL from env.
+Use @bsv/sdk and @bsv/wallet-toolbox npm packages to get the BSV things done. https://fast.brc.dev/llm-training-guide.txt is a good reference for patterns to use. The service should have a SERVER_PRIVATE_KEY defined as an env variable. This is the basis of the Server Wallet which will connect to a wallet storage provider at WALLET_STORAGE_URL from env.
 
 Use ./src/service/wallet.ts as the correct pattern for wallet initialization.
 
