@@ -30,15 +30,8 @@ export function WeatherList() {
     );
   }
 
-  if (!data || data.items.length === 0) {
-    return (
-      <div className="text-center py-12">
-        <p className="text-gray-500">No weather records found</p>
-      </div>
-    );
-  }
-
-  const { items, pagination } = data;
+  const items = data?.items ?? [];
+  const pagination = data?.pagination;
 
   return (
     <div>
@@ -60,40 +53,50 @@ export function WeatherList() {
         </select>
       </div>
 
-      {/* Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {items.map((record) => (
-          <WeatherCard key={record.id} record={record} />
-        ))}
-      </div>
-
-      {/* Pagination */}
-      {pagination.totalPages > 1 && (
-        <div className="mt-6 flex justify-center items-center gap-4">
-          <button
-            onClick={() => setPage((p) => Math.max(1, p - 1))}
-            disabled={page === 1}
-            className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            Previous
-          </button>
-          <span className="text-sm text-gray-600">
-            Page {pagination.page} of {pagination.totalPages}
-          </span>
-          <button
-            onClick={() => setPage((p) => Math.min(pagination.totalPages, p + 1))}
-            disabled={page === pagination.totalPages}
-            className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            Next
-          </button>
+      {/* Grid or Empty State */}
+      {items.length === 0 ? (
+        <div className="text-center py-12">
+          <p className="text-gray-500">No weather records found</p>
         </div>
-      )}
+      ) : (
+        <>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {items.map((record) => (
+              <WeatherCard key={record.id} record={record} />
+            ))}
+          </div>
 
-      {/* Summary */}
-      <div className="mt-4 text-center text-sm text-gray-500">
-        Showing {items.length} of {pagination.total} records
-      </div>
+          {/* Pagination */}
+          {pagination && pagination.totalPages > 1 && (
+            <div className="mt-6 flex justify-center items-center gap-4">
+              <button
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page === 1}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Previous
+              </button>
+              <span className="text-sm text-gray-600">
+                Page {pagination.page} of {pagination.totalPages}
+              </span>
+              <button
+                onClick={() => setPage((p) => Math.min(pagination.totalPages, p + 1))}
+                disabled={page === pagination.totalPages}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Next
+              </button>
+            </div>
+          )}
+
+          {/* Summary */}
+          {pagination && (
+            <div className="mt-4 text-center text-sm text-gray-500">
+              Showing {items.length} of {pagination.total} records
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
