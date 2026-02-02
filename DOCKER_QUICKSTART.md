@@ -1,16 +1,16 @@
 # Weather Chain - Docker Quick Start
 
-Get Weather Chain running in Docker in 5 minutes.
+Get Weather Chain running in Docker with the full stack (MongoDB, backend, frontend).
 
 ## Prerequisites
 
 - Docker installed
 - Docker Compose V2 installed
-- Tempest API key
+- Tempest API key (from weatherflow.com)
 
-## Setup (5 Steps)
+## Quick Setup (5 Steps)
 
-### 1. Clone & Configure
+### 1. Configure Environment
 
 ```bash
 cd weather-chain
@@ -23,25 +23,36 @@ Edit `.env` and set your `TEMPEST_API_KEY`:
 TEMPEST_API_KEY=your_actual_key_here
 ```
 
-### 2. Build & Start
-
-Using Makefile (recommended):
+### 2. Build Images
 
 ```bash
 make build
-make up
 ```
 
-Or using docker-compose:
+Or using docker-compose directly:
 
 ```bash
 docker-compose build
-docker-compose up -d mongodb
-sleep 10  # Wait for MongoDB
-docker-compose up -d app
 ```
 
-### 3. Create Funding Basket
+### 3. Start Services
+
+```bash
+make up
+```
+
+Or:
+
+```bash
+docker-compose up -d
+```
+
+This starts:
+- **MongoDB** on port 27017
+- **Backend API** on port 3001
+- **Frontend** on port 5173
+
+### 4. Create Funding Basket
 
 ```bash
 make setup
@@ -55,132 +66,164 @@ docker-compose --profile setup run --rm setup
 
 This creates 1000 hash puzzle funding outputs (one-time setup).
 
-### 4. Verify
+### 5. Access the Application
 
-Check logs:
+- **Frontend**: http://localhost:5173
+- **API**: http://localhost:3001/api
+- **API Health**: http://localhost:3001/api/health
 
-```bash
-make logs
-```
+## Verify It's Working
 
-You should see:
-```
-[INFO] Connected to MongoDB
-[INFO] Wallet initialized
-[INFO] Starting weather data polling (interval: 300s)
-[INFO] Starting record processor (interval: 3s)
-```
-
-### 5. Monitor
-
-Check status:
+### Check Services
 
 ```bash
 make status
+# or: docker-compose ps
 ```
 
-View MongoDB records:
+Expected output:
+```
+NAME                      STATUS              PORTS
+weather-chain-app         Up (healthy)        0.0.0.0:3001->3001/tcp
+weather-chain-frontend    Up                  0.0.0.0:5173->80/tcp
+weather-chain-mongodb     Up (healthy)        0.0.0.0:27017->27017/tcp
+```
+
+### Check Logs
+
+```bash
+make logs
+# or: docker-compose logs -f
+```
+
+Expected backend output:
+```
+[INFO] Connected to MongoDB successfully
+[INFO] Wallet initialized
+[INFO] Starting weather data polling (interval: 300s)
+[INFO] Starting record processor (interval: 3s)
+[STATUS] Queue: 5 pending, 0 processing, 10 completed, 0 failed
+```
+
+### Check Frontend
+
+Open http://localhost:5173 in your browser. You should see:
+- Weather records grid (after first poll at ~5 minutes)
+- Status filter dropdown
+- Pagination controls
+
+### Check Database
 
 ```bash
 make mongo-shell
-> db.weatherrecords.countDocuments({status: 'completed'})
+> db.weatherrecords.countDocuments({})
+> db.weatherrecords.find({status: 'completed'}).limit(3)
 ```
 
 ## Common Commands
 
 ```bash
-# Start everything
+# Build all images
+make build
+
+# Start all services
 make up
 
-# Stop everything
+# Stop all services
 make down
 
-# View logs
+# View logs (follow mode)
 make logs
 
-# Restart app
-make restart
-
-# Check status
+# Check service status
 make status
+
+# Restart a service
+docker-compose restart app
+docker-compose restart frontend
 
 # Open MongoDB shell
 make mongo-shell
+
+# Run setup (create funding outputs)
+make setup
 
 # Clean up everything (WARNING: deletes data)
 make clean
 ```
 
-## Verify It's Working
+## Service Details
 
-### 1. Check Services
+### MongoDB (weather-chain-mongodb)
+- Image: mongo:8.0
+- Port: 27017
+- Auth: admin/password
+- Data persisted in Docker volume
 
-```bash
-docker-compose ps
-```
+### Backend (weather-chain-app)
+- Port: 3001
+- Polls Tempest API every 5 minutes
+- Processes queue every 3 seconds
+- Monitors funding every 60 seconds
 
-Expected output:
-```
-NAME                    STATUS              PORTS
-weather-chain-app       Up (healthy)
-weather-chain-mongodb   Up (healthy)        27017/tcp
-```
+### Frontend (weather-chain-frontend)
+- Port: 5173 (mapped from nginx port 80)
+- React + TypeScript + Vite
+- TailwindCSS styling
+- Client-side blockchain verification
 
-### 2. Check Logs
+## Frontend Features
 
-```bash
-docker-compose logs app | grep -E "(INFO|STATUS)"
-```
+### Weather List
+- Browse all weather records in a responsive grid
+- Filter by status: All, Pending, Processing, Completed, Failed
+- See temperature, conditions, humidity, wind at a glance
+- Click any card to view full details
 
-Expected output:
-```
-[INFO] Connected to MongoDB successfully
-[INFO] Wallet initialized
-[INFO] Starting weather data polling
-[STATUS] Queue: 5 pending, 0 processing, 10 completed, 0 failed
-```
+### Weather Detail
+- View all 33 weather data fields
+- See blockchain transaction info (txid, output index)
+- Check confirmation status (Pending Confirmation vs On Chain)
+- Verify on blockchain with one click (for confirmed transactions)
+- Link to WhatsOnChain block explorer
 
-### 3. Check Database
-
-```bash
-docker-compose exec mongodb mongosh -u admin -p password weather-chain --eval "db.weatherrecords.countDocuments({})"
-```
-
-Should return number of weather records.
-
-### 4. Check Funding Basket
-
-Look for this in logs:
-
-```bash
-docker-compose logs app | grep "funding outputs"
-```
-
-Expected:
-```
-Current funding outputs: 1000
-```
+### Verification States
+- **Pending/Processing**: Record being processed
+- **Pending Confirmation**: Transaction broadcast, awaiting mining
+- **On Chain**: Transaction mined, verification available
+- **Verified**: Proof validated against blockchain
 
 ## Troubleshooting
 
-### MongoDB Not Ready
+### Frontend Not Loading
 
-**Symptom**: App exits immediately
+**Symptom**: Browser shows connection refused
 
 **Fix**:
 ```bash
-# Wait for MongoDB health check
-docker-compose ps
-# Wait until STATUS shows "healthy"
+# Check frontend container is running
+docker-compose ps frontend
+
+# Check logs
+docker-compose logs frontend
+
+# Restart frontend
+docker-compose restart frontend
 ```
 
-### Can't Connect to MongoDB
+### Backend Not Connecting to MongoDB
 
-**Symptom**: Connection refused errors
+**Symptom**: Connection refused errors in logs
 
 **Fix**:
 ```bash
-# Restart MongoDB
+# Check MongoDB is healthy
+docker-compose ps mongodb
+
+# Wait for health check to pass
+docker-compose logs mongodb
+
+# Restart both services
 docker-compose restart mongodb
 sleep 10
 docker-compose restart app
@@ -192,9 +235,11 @@ docker-compose restart app
 
 **Fix**:
 ```bash
-# Edit .env
+# Edit .env file
 nano .env
 # Add: TEMPEST_API_KEY=your_key
+
+# Restart app
 docker-compose restart app
 ```
 
@@ -206,53 +251,88 @@ docker-compose restart app
 - Fund your BSV wallet with satoshis
 - Retry setup: `make setup`
 
-## Development Mode
+### No Weather Data in Frontend
 
-Run only MongoDB in Docker, app locally:
+**Symptom**: "No weather records found"
 
+**Cause**: First poll hasn't completed yet (takes ~5 minutes)
+
+**Fix**:
 ```bash
-# Start MongoDB only
-make dev
+# Check backend logs for polling status
+docker-compose logs app | grep -E "(poll|STATUS)"
 
-# In another terminal
-npm run dev
+# Wait for: [STATUS] Queue: X pending, 0 processing, Y completed, 0 failed
 ```
 
-This allows faster iteration during development.
+### Verification Button Not Showing
+
+**Symptom**: Can't verify a completed record
+
+**Cause**: Transaction not yet confirmed (no merkle path)
+
+**Fix**: Wait a few minutes for the transaction to be mined, then refresh the page.
+
+## Development Mode
+
+Run MongoDB in Docker, but backend and frontend locally:
+
+```bash
+# Start only MongoDB
+make dev
+
+# In terminal 1: Start backend
+npm run dev
+
+# In terminal 2: Start frontend
+cd frontend && npm run dev
+```
+
+This allows faster iteration with hot module replacement.
+
+## Environment Variables
+
+### Backend (.env)
+```bash
+TEMPEST_API_KEY=your_key          # Required
+MONGO_URI=mongodb://...           # Set by docker-compose
+SERVER_PRIVATE_KEY=...            # BSV wallet key
+BSV_NETWORK=test                  # test or main
+POLL_RATE=300                     # Seconds between polls
+API_PORT=3001                     # API server port
+CORS_ORIGIN=http://localhost:5173 # Frontend URL
+```
+
+### Frontend (set in docker-compose.yaml)
+```bash
+VITE_API_URL=http://app:3001      # Backend API URL (internal)
+VITE_BSV_NETWORK=test             # For block explorer links
+```
 
 ## Production Deployment
 
-See DOCKER.md for:
+See `DOCKER.md` for:
 - Security hardening
 - Resource limits
-- Logging configuration
+- SSL/TLS configuration
+- Logging and monitoring
 - Backup procedures
-- Monitoring setup
-
-## Next Steps
-
-1. ✅ Services running
-2. ✅ Funding basket created
-3. ⏭️ Monitor logs for first poll
-4. ⏭️ Verify first transaction
-5. ⏭️ Set up production monitoring
-
-## Help
-
-- **Docker Guide**: `DOCKER.md`
-- **Service Docs**: `README_SERVICE.md`
-- **Full Docs**: `QUICKSTART.md`
 
 ## Summary
 
-Weather Chain is now running in Docker with:
-- ✅ MongoDB integrated
-- ✅ Auto-restart enabled
-- ✅ Health checks configured
-- ✅ Data persistence
-- ✅ Easy setup and management
+Weather Chain is now running with:
+- MongoDB for data persistence
+- Backend API processing weather data
+- Frontend for browsing and verification
+- All services orchestrated via Docker Compose
 
-Start: `make up`
-Setup: `make setup`
-Logs: `make logs`
-Stop: `make down`
+**Access Points**:
+- Frontend: http://localhost:5173
+- API: http://localhost:3001/api
+- MongoDB: localhost:27017
+
+**Quick Commands**:
+- Start: `make up`
+- Stop: `make down`
+- Logs: `make logs`
+- Setup: `make setup`

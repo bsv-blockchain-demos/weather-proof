@@ -1,22 +1,24 @@
 # Weather Chain - Quick Start Guide
 
+Get Weather Chain running locally for development.
+
 ## Prerequisites
 
 - Node.js 18+ and npm
-- MongoDB instance
-- BSV testnet wallet with some satoshis
-- Tempest weather API key
+- MongoDB instance (local or Docker)
+- BSV testnet wallet with satoshis
+- Tempest weather API key (from weatherflow.com)
 
 ## Installation
 
 ```bash
-# Clone repository
-cd weather-chain
-
-# Install dependencies
+# Install backend dependencies
 npm install
 
-# Build project
+# Install frontend dependencies
+cd frontend && npm install && cd ..
+
+# Build backend
 npm run build
 ```
 
@@ -44,81 +46,147 @@ FUNDING_OUTPUT_AMOUNT=1000
 FUNDING_BASKET_MIN=200
 FUNDING_BATCH_SIZE=1000
 WEATHER_OUTPUTS_PER_TX=100
+API_PORT=3001
+CORS_ORIGIN=http://localhost:5173
 ```
 
-## Setup
+## Start MongoDB
 
-Create the initial funding basket (1000 outputs):
+Using Docker (recommended):
+
+```bash
+make dev
+```
+
+Or start MongoDB locally:
+
+```bash
+mongod --dbpath /path/to/data
+```
+
+## Setup Funding Basket
+
+Create the initial funding outputs (one-time):
 
 ```bash
 npm run setup
 ```
 
-This will prompt you for how many outputs to create. The default is 1000.
+This creates 1000 hash puzzle UTXOs for transaction funding.
 
-## Running
+## Running the Application
 
-Start the service:
+### Start Backend
 
 ```bash
 npm start
+# Or for development with auto-reload:
+npm run dev
 ```
 
-The service will:
+The backend will:
 - Poll Tempest API every 5 minutes
 - Store weather data in MongoDB queue
 - Process queue into blockchain transactions
 - Monitor funding basket and auto-refill
+- Serve REST API on port 3001
 
-## Monitoring
+### Start Frontend
 
-Check the console output for status:
+In a new terminal:
+
+```bash
+cd frontend
+npm run dev
+```
+
+The frontend will be available at http://localhost:5173
+
+## Accessing the Application
+
+- **Frontend**: http://localhost:5173
+- **API**: http://localhost:3001/api
+- **Health Check**: http://localhost:3001/api/health
+
+## Verify It's Working
+
+### 1. Check Backend Logs
 
 ```
-[STATUS] Queue: 15 pending, 0 processing, 243 completed, 0 failed
+[INFO] Connected to MongoDB successfully
+[INFO] Wallet initialized
+[INFO] Starting weather data polling (interval: 300s)
+[INFO] Starting record processor (interval: 3s)
+[STATUS] Queue: 5 pending, 0 processing, 10 completed, 0 failed
 ```
 
-Check MongoDB for records:
+### 2. Check Frontend
+
+Open http://localhost:5173 and you should see:
+- Weather records grid (after first poll completes)
+- Status filter dropdown
+- Pagination controls
+
+### 3. Check Database
 
 ```bash
 mongosh mongodb://localhost:27017/weather-chain
 > db.weatherrecords.find({status: 'completed'}).limit(5)
 ```
 
-Check funding basket:
+### 4. Check API
 
 ```bash
-# The service logs funding status automatically
-[INFO] Current funding outputs: 892
+curl http://localhost:3001/api/health
+curl http://localhost:3001/api/weather
 ```
 
-## Development Mode
+## Frontend Features
 
-Run in development with auto-reload:
+### Weather List Page (/)
+- Grid of weather records with temperature, conditions, humidity, wind
+- Filter by status: All, Pending, Processing, Completed, Failed
+- Pagination with 12 records per page
+- Click any card to view details
 
-```bash
-npm run dev
-```
+### Weather Detail Page (/weather/:id)
+- Full weather data (33 fields in 6 categories)
+- Blockchain information (txid, output index)
+- Verification badge showing confirmation status
+- "Verify on Blockchain" button for confirmed transactions
+- Link to WhatsOnChain block explorer
+
+### Verification States
+- **pending/processing**: Record not yet on blockchain
+- **Pending Confirmation**: Transaction broadcast, waiting for mining
+- **On Chain**: Transaction confirmed, verification available
+- **Verified**: User clicked verify, proof validated
 
 ## Testing
 
-Run the test suite (111 tests):
-
 ```bash
+# Run backend tests
 npm test
-```
 
-Run with coverage:
-
-```bash
+# Run with coverage
 npm run test:coverage
+
+# Lint code
+npm run lint
+
+# Format code
+npm run format
 ```
 
 ## Troubleshooting
 
 ### "Insufficient funds to create funding outputs"
 
-Your wallet needs more satoshis. Add funds to the wallet address and retry setup.
+Your wallet needs satoshis. Fund the wallet address and retry:
+
+```bash
+npm run setup
+```
 
 ### "TEMPEST_API_KEY is required"
 
@@ -126,59 +194,50 @@ Add your Tempest API key to `.env` file.
 
 ### "Failed to connect to MongoDB"
 
-Ensure MongoDB is running and MONGO_URI is correct.
+Ensure MongoDB is running:
 
-### No weather data being processed
+```bash
+# If using Docker
+docker ps | grep mongo
+make dev
 
-1. Check Tempest API key is valid
-2. Check MongoDB connection
-3. Check wallet has funding outputs
-4. Check console logs for specific errors
-
-## Architecture
-
-```
-Tempest API (300s poll)
-    ↓
-MongoDB Queue (pending records)
-    ↓
-Processor (3s interval, batches of 100)
-    ↓
-BSV Blockchain (OP_RETURN outputs)
-
-Monitor (60s interval)
-    ↓
-Funding Basket (hash puzzle UTXOs)
+# If local
+mongod --dbpath /path/to/data
 ```
 
-## Key Services
+### Frontend shows "Failed to load weather records"
 
-- **Polling**: Fetches weather data every 5 minutes
-- **Processor**: Creates transactions every 3 seconds
-- **Monitor**: Checks funding every 60 seconds
-- **Queue**: MongoDB-backed async processing
+1. Check backend is running on port 3001
+2. Check CORS_ORIGIN in .env matches frontend URL
+3. Check browser console for errors
+
+### No weather data appearing
+
+1. Wait 5 minutes for first poll (or check logs)
+2. Verify TEMPEST_API_KEY is valid
+3. Check MongoDB has records: `db.weatherrecords.countDocuments()`
+
+### Verification button not showing
+
+The "Verify on Blockchain" button only appears for transactions that are confirmed on-chain (have a merkle path). New transactions may take a few minutes to be mined.
+
+## Development Workflow
+
+1. Start MongoDB: `make dev`
+2. Start backend: `npm run dev` (auto-reloads on changes)
+3. Start frontend: `cd frontend && npm run dev` (hot module replacement)
+4. Make changes and see results immediately
 
 ## Next Steps
 
-1. Monitor the first few transactions on blockchain explorer
-2. Verify weather data encoding/decoding works correctly
-3. Adjust POLL_RATE and WEATHER_OUTPUTS_PER_TX as needed
-4. Set up production monitoring/alerts
-5. Consider Twilio SMS notifications for critical alerts
+1. Monitor first transactions on WhatsOnChain
+2. Click "Verify on Blockchain" to test SPV verification
+3. Adjust POLL_RATE for more/less frequent data
+4. Set up production deployment with Docker
 
 ## Documentation
 
-- `README.md` - Encoding library documentation
-- `README_SERVICE.md` - Service application documentation
-- `PLAN.md` - Implementation plan
-- `SPEC.md` - Original specifications
-- `IMPLEMENTATION_SUMMARY.md` - What was built
-
-## Support
-
-Check console logs first. Most issues are related to:
-- Configuration (API keys, MongoDB URI)
-- Wallet funding (need satoshis)
-- Network connectivity
-
-For detailed help, see README_SERVICE.md
+- `README.md` - Full documentation
+- `DOCKER_QUICKSTART.md` - Docker deployment
+- `ENCODING.md` - Bitcoin Script encoding details
+- `CONTRIBUTING.md` - How to contribute

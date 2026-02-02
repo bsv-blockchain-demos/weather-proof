@@ -10,22 +10,25 @@ All notable changes to this project will be documented in this file. The format 
 ## [Unreleased]
 
 ### Added
-- (Include new features or significant user-visible enhancements here.)
+- React frontend application for browsing and verifying weather records
+- Weather list page with pagination and status filtering
+- Weather detail page showing all 33 weather data fields
+- Client-side blockchain verification using BEEF proofs and @bsv/sdk
+- Confirmation status detection (Pending Confirmation vs On Chain)
+- VerificationBadge component with visual status indicators
+- Frontend Docker container with nginx serving
+- Frontend integrated into docker-compose.yaml
+- Comprehensive README.md with full-stack documentation
+- Frontend-specific README.md in frontend/ directory
 
 ### Changed
-- (Detail modifications that are non-breaking but relevant to the end-users.)
-
-### Deprecated
-- (List features that are in the process of being phased out or replaced.)
-
-### Removed
-- (Indicate features or capabilities that were taken out of the project.)
+- Updated QUICKSTART.md with frontend setup instructions
+- Updated DOCKER_QUICKSTART.md with frontend service details
+- Status filter dropdown now remains visible when no records match filter
 
 ### Fixed
-- (Document bugs that were fixed since the last release.)
-
-### Security
-- (Notify of any improvements related to security vulnerabilities or potential risks.)
+- Weather list filter dropdown now shows even when "No weather records found"
+- Verify button only appears for transactions confirmed on-chain (with merkle path)
 
 ---
 
