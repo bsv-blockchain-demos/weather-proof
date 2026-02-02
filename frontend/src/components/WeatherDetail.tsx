@@ -2,6 +2,7 @@ import { useParams, Link } from 'react-router-dom';
 import { useWeatherRecord } from '../hooks/useWeather';
 import { useVerification } from '../hooks/useVerification';
 import { VerificationBadge } from './VerificationBadge';
+import { getNetwork } from '../services/verify';
 
 /**
  * Format temperature from Celsius
@@ -65,6 +66,7 @@ const fieldGroups = {
 export function WeatherDetail() {
   const { id } = useParams<{ id: string }>();
   const { data: record, isLoading, error } = useWeatherRecord(id);
+  const network = getNetwork();
 
   const txid = record?.blockchain.txid ?? null;
   const { verify, verificationResult, isVerifying } = useVerification(txid);
@@ -132,7 +134,7 @@ export function WeatherDetail() {
               <dt className="text-sm text-gray-500">Transaction ID</dt>
               <dd className="font-mono text-sm break-all">
                 <a
-                  href={`https://test.whatsonchain.com/tx/${record.blockchain.txid}`}
+                  href={`https://${network === 'main' ? 'whatsonchain.com' : 'test.whatsonchain.com'}/tx/${record.blockchain.txid}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="text-indigo-600 hover:underline"

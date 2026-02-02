@@ -77,7 +77,7 @@ services:
       - app
     environment:
       VITE_API_URL: http://app:3001
-      VITE_BSV_NETWORK: ${BSV_NETWORK:-test}
+      VITE_BSV_NETWORK: ${BSV_NETWORK:-main}
     ports:
       - "5173:80"
     networks:

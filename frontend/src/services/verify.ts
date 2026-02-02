@@ -13,7 +13,7 @@ export interface VerificationResult {
 /**
  * Get the BSV network from environment
  */
-function getNetwork(): 'main' | 'test' {
+export function getNetwork(): 'main' | 'test' {
   const network = import.meta.env.VITE_BSV_NETWORK;
   return network === 'main' ? 'main' : 'test';
 }
@@ -25,8 +25,12 @@ function getNetwork(): 'main' | 'test' {
 export async function verifyWeatherProof(beefHex: string): Promise<VerificationResult> {
   try {
     // Parse BEEF to get Transaction with MerklePath
-    const beefBytes = hexToBytes(beefHex);
-    const tx = Transaction.fromBEEF(beefBytes);
+    const tx = Transaction.fromHexBEEF(beefHex);
+
+    // rely only on merklePath of current tx
+    if (!tx.merklePath) {
+      throw new Error('Transaction does not have a merkle path');
+    }
 
     // Create WhatsOnChain chain tracker
     const network = getNetwork();
@@ -51,15 +55,4 @@ export async function verifyWeatherProof(beefHex: string): Promise<VerificationR
       error: message,
     };
   }
-}
-
-/**
- * Convert hex string to Uint8Array
- */
-function hexToBytes(hex: string): number[] {
-  const bytes: number[] = [];
-  for (let i = 0; i < hex.length; i += 2) {
-    bytes.push(parseInt(hex.slice(i, i + 2), 16));
-  }
-  return bytes;
 }
