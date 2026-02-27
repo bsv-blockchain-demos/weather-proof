@@ -144,10 +144,12 @@ export function Dashboard() {
       queryClient.prefetchQuery({
         queryKey: ['station', stationId],
         queryFn: () => fetchStation(stationId),
+        staleTime: 2 * 60_000,
       });
       queryClient.prefetchQuery({
         queryKey: ['weather', 'list', { stationId, page: 1, limit: RECORDS_PAGE_SIZE }],
         queryFn: () => fetchWeatherRecords({ stationId, page: 1, limit: RECORDS_PAGE_SIZE }),
+        staleTime: 2 * 60_000,
       });
     },
     [queryClient]

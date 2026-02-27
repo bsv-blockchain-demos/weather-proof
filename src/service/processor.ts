@@ -163,19 +163,35 @@ export async function processPendingRecords(notification: NotificationService): 
       return records.length;
     } catch (error) {
       // Roll back to pending so the batch can be retried
-      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      const errorMsg = error instanceof Error ? error.message : String(error);
 
-      await WeatherRecord.bulkWrite(
-        ids.map((id) => ({
-          updateOne: {
-            filter: { _id: id },
-            update: { $set: { status: 'pending', error: errorMsg } },
-          },
-        })),
-        { ordered: false }
-      );
+      console.error('Transaction failed — rolling back records to pending:', {
+        recordIds: ids.map((id) => id.toString()),
+        recordCount: ids.length,
+        error: error instanceof Error
+          ? { name: error.name, message: error.message, stack: error.stack }
+          : error,
+      });
 
-      console.error('Failed to process records:', errorMsg);
+      try {
+        await WeatherRecord.bulkWrite(
+          ids.map((id) => ({
+            updateOne: {
+              filter: { _id: id },
+              update: { $set: { status: 'pending', error: errorMsg } },
+            },
+          })),
+          { ordered: false }
+        );
+        console.log(`Rolled back ${ids.length} record(s) to 'pending'`);
+      } catch (rollbackError) {
+        console.error('Rollback also failed — records may be stuck in processing:', {
+          recordIds: ids.map((id) => id.toString()),
+          error: rollbackError instanceof Error
+            ? { name: rollbackError.name, message: rollbackError.message }
+            : rollbackError,
+        });
+      }
 
       if (errorMsg.includes('insufficient')) {
         await notification.sendError('CRITICAL: Insufficient funds in wallet');
@@ -186,6 +202,24 @@ export async function processPendingRecords(notification: NotificationService): 
   } catch (error) {
     console.error('Processor error:', error);
     throw error;
+  }
+}
+
+/**
+ * Reset any records stuck in 'processing' back to 'pending'.
+ *
+ * Call once at startup. If the server crashed or was restarted mid-transaction
+ * the records it was processing never got rolled back and are now invisible to
+ * the processor (which only queries { status: 'pending' }).
+ */
+export async function recoverStuckRecords(): Promise<void> {
+  const result = await WeatherRecord.updateMany(
+    { status: 'processing' },
+    { $set: { status: 'pending', error: 'Recovered on startup from stuck processing state' } }
+  );
+
+  if (result.modifiedCount > 0) {
+    console.log(`Recovered ${result.modifiedCount} stuck record(s): 'processing' → 'pending'`);
   }
 }
 

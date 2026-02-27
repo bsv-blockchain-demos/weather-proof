@@ -4,7 +4,7 @@ import { getWallet } from './service/wallet';
 import { ensureFundingOutputs } from './service/setup';
 import { startMonitoringLoop, stopMonitoringLoop } from './service/monitor';
 import { startPollingLoop, stopPollingLoop, getQueueStats } from './service/queue';
-import { startProcessorLoop, stopProcessorLoop } from './service/processor';
+import { startProcessorLoop, stopProcessorLoop, recoverStuckRecords } from './service/processor';
 import { ConsoleNotification } from './notification/console';
 import { config, validateConfig } from './config/env';
 import { startApiServer } from './api';
@@ -46,6 +46,9 @@ async function initialize(): Promise<void> {
   console.log('Initializing wallet...');
   await getWallet();
   console.log('✓ Wallet initialized');
+
+  // Recover any records that were stuck mid-processing before the last shutdown
+  await recoverStuckRecords();
 
   // Ensure funding basket
   console.log('Checking funding basket...');
