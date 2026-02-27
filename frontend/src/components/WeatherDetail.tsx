@@ -74,7 +74,7 @@ export function WeatherDetail() {
   if (isLoading) {
     return (
       <div className="flex justify-center items-center py-12">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600" />
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-400" />
       </div>
     );
   }
@@ -82,10 +82,10 @@ export function WeatherDetail() {
   if (error || !record) {
     return (
       <div className="text-center py-12">
-        <p className="text-red-600">Failed to load weather record</p>
+        <p className="text-red-400">Failed to load weather record</p>
         <p className="text-gray-500 text-sm mt-2">{error?.message || 'Record not found'}</p>
-        <Link to="/" className="mt-4 inline-block text-indigo-600 hover:underline">
-          Back to list
+        <Link to="/" className="mt-4 inline-block text-indigo-400 hover:underline">
+          Back to dashboard
         </Link>
       </div>
     );
@@ -95,21 +95,24 @@ export function WeatherDetail() {
 
   return (
     <div className="max-w-4xl mx-auto">
-      {/* Header */}
-      <div className="mb-6">
-        <Link to="/" className="text-indigo-600 hover:underline text-sm">
-          &larr; Back to list
+      {/* Back nav */}
+      <div className="mb-6 flex gap-3 text-sm">
+        <Link
+          to={`/station/${record.stationId}`}
+          className="text-indigo-400 hover:underline"
+        >
+          &larr; Back to station
         </Link>
       </div>
 
       {/* Main Info Card */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
+      <div className="bg-gray-800 rounded-lg border border-gray-700 p-6 mb-6">
         <div className="flex items-start justify-between">
           <div>
-            <h1 className="text-3xl font-bold text-gray-900">
+            <h1 className="text-3xl font-bold text-white">
               {formatTemp(data.air_temperature)}
             </h1>
-            <p className="text-lg text-gray-600 capitalize">{data.conditions}</p>
+            <p className="text-lg text-gray-400 capitalize mt-1">{data.conditions}</p>
             <p className="text-sm text-gray-500 mt-2">
               Station {record.stationId} &middot; {formatTime(record.timestamp)}
             </p>
@@ -128,17 +131,17 @@ export function WeatherDetail() {
 
       {/* Blockchain Info */}
       {record.blockchain.txid && (
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
-          <h2 className="text-lg font-semibold text-gray-900 mb-4">Blockchain Record</h2>
+        <div className="bg-gray-800 rounded-lg border border-gray-700 p-6 mb-6">
+          <h2 className="text-base font-semibold text-white mb-4">Blockchain Record</h2>
           <dl className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <dt className="text-sm text-gray-500">Transaction ID</dt>
-              <dd className="font-mono text-sm break-all">
+              <dd className="font-mono text-sm break-all mt-1">
                 <a
                   href={`https://${network === 'main' ? 'whatsonchain.com' : 'test.whatsonchain.com'}/tx/${record.blockchain.txid}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-indigo-600 hover:underline"
+                  className="text-indigo-400 hover:underline"
                 >
                   {record.blockchain.txid}
                 </a>
@@ -146,33 +149,32 @@ export function WeatherDetail() {
             </div>
             <div>
               <dt className="text-sm text-gray-500">Output Index</dt>
-              <dd className="font-mono text-sm">{record.blockchain.outputIndex}</dd>
+              <dd className="font-mono text-sm text-gray-300 mt-1">{record.blockchain.outputIndex}</dd>
             </div>
-            {verificationResult?.blockHeight ? (
-              <div>
-                <dt className="text-sm text-gray-500">Block Height</dt>
-                <dd className="font-mono text-sm">{verificationResult.blockHeight}</dd>
-              </div>
-            ) : (
-              <div>
-                <dt className="text-sm text-gray-500">Block Height</dt>
-                <dd className="font-mono text-sm">Not confirmed yet</dd>
-              </div>
-            )}
+            <div>
+              <dt className="text-sm text-gray-500">Block Height</dt>
+              <dd className="font-mono text-sm text-gray-300 mt-1">
+                {record.blockchain.blockHeight
+                  ? record.blockchain.blockHeight.toLocaleString()
+                  : verificationResult?.blockHeight
+                    ? verificationResult.blockHeight.toLocaleString()
+                    : 'Not confirmed yet'}
+              </dd>
+            </div>
           </dl>
 
           {record.status === 'completed' && isConfirmed && !verificationResult && (
             <button
               onClick={verify}
               disabled={isVerifying}
-              className="mt-4 px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+              className="mt-4 px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50 transition-colors text-sm"
             >
               {isVerifying ? 'Verifying...' : 'Verify on Blockchain'}
             </button>
           )}
 
           {verificationResult?.error && (
-            <p className="mt-4 text-sm text-red-600">
+            <p className="mt-4 text-sm text-red-400">
               Verification error: {verificationResult.error}
             </p>
           )}
@@ -180,17 +182,17 @@ export function WeatherDetail() {
       )}
 
       {/* Weather Data Groups */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {Object.entries(fieldGroups).map(([groupName, fields]) => (
-          <div key={groupName} className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <h2 className="text-lg font-semibold text-gray-900 mb-4 capitalize">{groupName}</h2>
-            <dl className="space-y-3">
+          <div key={groupName} className="bg-gray-800 rounded-lg border border-gray-700 p-6">
+            <h2 className="text-sm font-semibold text-gray-300 mb-4 uppercase tracking-wide">{groupName}</h2>
+            <dl className="space-y-2.5">
               {fields.map((field) => {
                 const value = data[field.key as keyof typeof data];
                 return (
                   <div key={field.key} className="flex justify-between">
                     <dt className="text-sm text-gray-500">{field.label}</dt>
-                    <dd className="text-sm font-medium text-gray-900">
+                    <dd className="text-sm font-medium text-gray-200">
                       {field.format(value as never)}
                     </dd>
                   </div>
@@ -201,28 +203,28 @@ export function WeatherDetail() {
         ))}
       </div>
 
-      {/* Metadata */}
-      <div className="mt-6 bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-        <h2 className="text-lg font-semibold text-gray-900 mb-4">Record Metadata</h2>
+      {/* Record Metadata */}
+      <div className="mt-4 bg-gray-800 rounded-lg border border-gray-700 p-6">
+        <h2 className="text-sm font-semibold text-gray-300 mb-4 uppercase tracking-wide">Record Metadata</h2>
         <dl className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div>
             <dt className="text-sm text-gray-500">Record ID</dt>
-            <dd className="font-mono text-sm">{record.id}</dd>
+            <dd className="font-mono text-xs text-gray-400 mt-1 break-all">{record.id}</dd>
           </div>
           <div>
             <dt className="text-sm text-gray-500">Created At</dt>
-            <dd className="text-sm">{formatTime(record.createdAt)}</dd>
+            <dd className="text-sm text-gray-300 mt-1">{formatTime(record.createdAt)}</dd>
           </div>
           {record.processedAt && (
             <div>
               <dt className="text-sm text-gray-500">Processed At</dt>
-              <dd className="text-sm">{formatTime(record.processedAt)}</dd>
+              <dd className="text-sm text-gray-300 mt-1">{formatTime(record.processedAt)}</dd>
             </div>
           )}
         </dl>
         {record.error && (
-          <div className="mt-4 p-3 bg-red-50 rounded-md">
-            <p className="text-sm text-red-600">{record.error}</p>
+          <div className="mt-4 p-3 bg-red-900/30 border border-red-700/50 rounded">
+            <p className="text-sm text-red-400">{record.error}</p>
           </div>
         )}
       </div>

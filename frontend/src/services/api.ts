@@ -1,4 +1,4 @@
-import type { WeatherRecord, PaginatedResponse, BeefProof, RecordStatus } from '../types/weather';
+import type { WeatherRecord, PaginatedResponse, BeefProof, RecordStatus, DashboardResponse, StationSummary } from '../types/weather';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
@@ -55,6 +55,44 @@ export async function fetchBeefProof(txid: string): Promise<BeefProof> {
       throw new Error('Transaction not found or not yet mined');
     }
     throw new Error(`Failed to fetch BEEF proof: ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Fetch dashboard data: global stats + paginated station list
+ */
+export async function fetchDashboard(params: {
+  page?: number;
+  limit?: number;
+  search?: string;
+} = {}): Promise<DashboardResponse> {
+  const searchParams = new URLSearchParams();
+  if (params.page) searchParams.set('page', params.page.toString());
+  if (params.limit) searchParams.set('limit', params.limit.toString());
+  if (params.search) searchParams.set('search', params.search);
+
+  const response = await fetch(`${API_BASE}/api/stations?${searchParams}`);
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch dashboard: ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Fetch a single station's metadata and summary
+ */
+export async function fetchStation(stationId: number): Promise<StationSummary> {
+  const response = await fetch(`${API_BASE}/api/stations/${stationId}`);
+
+  if (!response.ok) {
+    if (response.status === 404) {
+      throw new Error('Station not found');
+    }
+    throw new Error(`Failed to fetch station: ${response.statusText}`);
   }
 
   return response.json();

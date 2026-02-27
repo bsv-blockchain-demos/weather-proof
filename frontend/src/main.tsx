@@ -8,7 +8,8 @@ import './index.css';
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      staleTime: 30000,
+      staleTime: 30_000,       // data stays fresh for 30s — no refetch on re-mount within that window
+      gcTime: 10 * 60_000,    // evicted pages stay in memory 10 min — back-navigation is instant
       retry: 1,
     },
   },

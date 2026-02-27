@@ -53,6 +53,7 @@ export interface WeatherRecord {
   blockchain: {
     txid: string | null;
     outputIndex: number | null;
+    blockHeight: number | null;
   };
   status: RecordStatus;
   createdAt: string;
@@ -79,4 +80,43 @@ export interface PaginatedResponse<T> {
 export interface BeefProof {
   txid: string;
   beef: string;
+}
+
+/**
+ * Station summary for the dashboard
+ */
+export interface StationSummary {
+  stationId: number;
+  name: string;
+  location: string;
+  status: 'online' | 'offline';
+  lastReading: string | null;
+  lastTemp: number | null;
+  lastConditions: string;
+  txRecords: number;
+  lastBlockHeight: number | null;
+}
+
+/**
+ * Global dashboard stats
+ */
+export interface DashboardStats {
+  activeStations: number;
+  totalTx: number;
+  lastRecordWrite: string | null;
+  totalDataPoints: number;
+}
+
+/**
+ * Dashboard API response
+ */
+export interface DashboardResponse {
+  stats: DashboardStats;
+  stations: StationSummary[];
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+  };
 }

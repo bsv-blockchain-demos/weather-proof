@@ -48,6 +48,7 @@ router.get('/', async (req: Request<object, object, object, WeatherListQuery>, r
       blockchain: {
         txid: record.txid ?? null,
         outputIndex: record.outputIndex ?? null,
+        blockHeight: record.blockHeight ?? null,
       },
       status: record.status,
       createdAt: record.createdAt.toISOString(),
@@ -90,6 +91,7 @@ router.get('/:id', async (req: Request<{ id: string }>, res: Response) => {
       blockchain: {
         txid: record.txid ?? null,
         outputIndex: record.outputIndex ?? null,
+        blockHeight: record.blockHeight ?? null,
       },
       status: record.status,
       createdAt: record.createdAt.toISOString(),

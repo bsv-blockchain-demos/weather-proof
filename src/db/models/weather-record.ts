@@ -16,6 +16,7 @@ export interface IWeatherRecord extends Document {
   status: RecordStatus;
   txid?: string;
   outputIndex?: number;
+  blockHeight?: number;
   error?: string;
   createdAt: Date;
   processedAt?: Date;
@@ -52,6 +53,10 @@ const WeatherRecordSchema = new Schema<IWeatherRecord>({
   outputIndex: {
     type: Number,
   },
+  blockHeight: {
+    type: Number,
+    index: true,
+  },
   error: {
     type: String,
   },
@@ -68,6 +73,8 @@ const WeatherRecordSchema = new Schema<IWeatherRecord>({
 // Compound indexes for efficient queries
 WeatherRecordSchema.index({ status: 1, createdAt: 1 });
 WeatherRecordSchema.index({ stationId: 1, timestamp: 1 });
+// Supports the station records page: find({stationId}).sort({createdAt:-1}).skip().limit()
+WeatherRecordSchema.index({ stationId: 1, createdAt: -1 });
 
 /**
  * Weather record model
