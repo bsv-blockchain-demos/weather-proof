@@ -1,10 +1,12 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useDashboard } from '../hooks/useWeather';
 import { useLiveStats } from '../hooks/useLiveStats';
 import { fetchDashboard, fetchStation, fetchWeatherRecords } from '../services/api';
 import type { StationSummary } from '../types/weather';
+import { SortableTh } from './SortableTh';
+import type { SortDir } from './SortableTh';
 
 const PAGE_SIZE = 50;
 const RECORDS_PAGE_SIZE = 20;
@@ -22,8 +24,8 @@ function formatDateTime(ts: string | null): string {
 }
 
 function formatLargeNumber(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${Math.round(n / 1_000)}K`;
+  //if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  //if (n >= 1_000) return `${Math.round(n / 1_000)}K`;
   return n.toLocaleString();
 }
 
@@ -68,6 +70,8 @@ function LiveDot({ status }: { status: 'connecting' | 'connected' | 'disconnecte
     </span>
   );
 }
+
+type SortKey = 'stationId' | 'status' | 'lastReading' | 'lastTemp' | 'txRecords';
 
 interface StationRowProps {
   station: StationSummary;
@@ -121,6 +125,8 @@ export function Dashboard() {
   const [page, setPage] = useState(1);
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
+  const [sortKey, setSortKey] = useState<SortKey | null>(null);
+  const [sortDir, setSortDir] = useState<SortDir>('asc');
 
   const { data, isLoading, isFetching, error } = useDashboard({ page, limit: PAGE_SIZE, search });
   const liveStatus = useLiveStats();
@@ -173,6 +179,37 @@ export function Dashboard() {
     setPage(1);
   }, []);
 
+  const handleSort = useCallback((key: SortKey) => {
+    if (sortKey !== key) {
+      setSortKey(key);
+      setSortDir('asc');
+    } else if (sortDir === 'asc') {
+      setSortDir('desc');
+    } else {
+      setSortKey(null);
+      setSortDir('asc');
+    }
+  }, [sortKey, sortDir]);
+
+  const stations = data?.stations ?? [];
+
+  const sortedStations = useMemo(() => {
+    if (!sortKey) return stations;
+    return [...stations].sort((a, b) => {
+      const aVal = a[sortKey];
+      const bVal = b[sortKey];
+      if (aVal === null || aVal === undefined) return 1;
+      if (bVal === null || bVal === undefined) return -1;
+      let cmp = 0;
+      if (typeof aVal === 'number' && typeof bVal === 'number') {
+        cmp = aVal - bVal;
+      } else {
+        cmp = String(aVal).localeCompare(String(bVal));
+      }
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
+  }, [stations, sortKey, sortDir]);
+
   // Only show a full-page spinner on the very first load (no cached data yet)
   if (isLoading) {
     return (
@@ -192,7 +229,6 @@ export function Dashboard() {
   }
 
   const stats = data?.stats;
-  const stations = data?.stations ?? [];
   const pagination = data?.pagination;
 
   return (
@@ -206,8 +242,8 @@ export function Dashboard() {
           </div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <StatCard label="Active Stations" value={stats.activeStations.toLocaleString()} />
-            <StatCard label="Total Tx" value={stats.totalTx.toLocaleString()} />
-            <StatCard label="Last Record Write" value={formatDateTime(stats.lastRecordWrite)} />
+            <StatCard label="Total Tx on-chain" value={stats.totalTx.toLocaleString()} />
+            <StatCard label="Last Record Written" value={formatDateTime(stats.lastRecordWrite)} />
             <StatCard label="Total Data Points" value={formatLargeNumber(stats.totalDataPoints)} />
           </div>
         </div>
@@ -258,14 +294,14 @@ export function Dashboard() {
           <table className="w-full text-left">
             <thead>
               <tr className="bg-gray-900/60">
-                <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase tracking-wide">Station ID</th>
+                <SortableTh label="Station ID" sortKey="stationId" currentSort={sortKey} currentDir={sortDir} onSort={handleSort} />
                 <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase tracking-wide">Name</th>
                 <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase tracking-wide">Location</th>
-                <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase tracking-wide">Status</th>
-                <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase tracking-wide">Last Reading</th>
-                <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase tracking-wide">Temp</th>
+                <SortableTh label="Status" sortKey="status" currentSort={sortKey} currentDir={sortDir} onSort={handleSort} />
+                <SortableTh label="Last Reading" sortKey="lastReading" currentSort={sortKey} currentDir={sortDir} onSort={handleSort} />
+                <SortableTh label="Temp" sortKey="lastTemp" currentSort={sortKey} currentDir={sortDir} onSort={handleSort} />
                 <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase tracking-wide">Conditions</th>
-                <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase tracking-wide text-right">Tx Records</th>
+                <SortableTh label="Tx Records" sortKey="txRecords" currentSort={sortKey} currentDir={sortDir} onSort={handleSort} right />
               </tr>
             </thead>
             {/* Dim the rows during background fetches instead of replacing with a spinner */}
@@ -277,7 +313,7 @@ export function Dashboard() {
                   </td>
                 </tr>
               ) : (
-                stations.map((station) => (
+                sortedStations.map((station) => (
                   <StationRow
                     key={station.stationId}
                     station={station}

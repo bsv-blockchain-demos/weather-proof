@@ -1,10 +1,12 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useStation, useStationRecords } from '../hooks/useWeather';
 import { useAutoVerify } from '../hooks/useAutoVerify';
 import { fetchWeatherRecords, fetchWeatherRecord } from '../services/api';
 import type { WeatherRecord, RecordStatus } from '../types/weather';
+import { SortableTh } from './SortableTh';
+import type { SortDir } from './SortableTh';
 
 const LIMIT = 20;
 
@@ -25,15 +27,6 @@ function truncateTxid(txid: string | null): string {
   return `${txid.slice(0, 6)}...${txid.slice(-4)}`;
 }
 
-function getQcStatus(status: RecordStatus): string {
-  switch (status) {
-    case 'completed':  return 'Post-QC';
-    case 'processing': return 'In-QC';
-    case 'pending':    return 'Pre-QC';
-    case 'failed':     return 'Failed';
-  }
-}
-
 function getOnChainStatus(record: WeatherRecord): { label: string; color: string } {
   if (record.status !== 'completed' || !record.blockchain.txid) {
     return { label: 'Not On-Chain', color: 'text-gray-500' };
@@ -44,19 +37,15 @@ function getOnChainStatus(record: WeatherRecord): { label: string; color: string
   return { label: 'Unconfirmed', color: 'text-yellow-400' };
 }
 
-function QcBadge({ status }: { status: RecordStatus }) {
-  const styles: Record<RecordStatus, string> = {
-    completed: 'bg-emerald-900/50 text-emerald-400 border border-emerald-700/50',
-    processing: 'bg-blue-900/50 text-blue-400 border border-blue-700/50',
-    pending:    'bg-yellow-900/50 text-yellow-400 border border-yellow-700/50',
-    failed:     'bg-red-900/50 text-red-400 border border-red-700/50',
-  };
+function QcBadge(_: { status: RecordStatus }) {
   return (
-    <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${styles[status]}`}>
-      {getQcStatus(status)}
+    <span className="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-emerald-900/50 text-emerald-400 border border-emerald-700/50">
+      Post-QC
     </span>
   );
 }
+
+type SortKey = 'timestamp' | 'blockHeight' | 'onChainStatus';
 
 interface TxRowProps {
   record: WeatherRecord;
@@ -139,6 +128,42 @@ export function StationRecords() {
     [queryClient]
   );
 
+  const [sortKey, setSortKey] = useState<SortKey | null>(null);
+  const [sortDir, setSortDir] = useState<SortDir>('asc');
+
+  const handleSort = useCallback((key: SortKey) => {
+    if (sortKey !== key) {
+      setSortKey(key);
+      setSortDir('asc');
+    } else if (sortDir === 'asc') {
+      setSortDir('desc');
+    } else {
+      setSortKey(null);
+      setSortDir('asc');
+    }
+  }, [sortKey, sortDir]);
+
+  const sortedRecords = useMemo(() => {
+    if (!sortKey) return records;
+    return [...records].sort((a, b) => {
+      let cmp = 0;
+      if (sortKey === 'timestamp') {
+        cmp = a.timestamp.localeCompare(b.timestamp);
+      } else if (sortKey === 'blockHeight') {
+        const aH = a.blockchain.blockHeight ?? -1;
+        const bH = b.blockchain.blockHeight ?? -1;
+        cmp = aH - bH;
+      } else if (sortKey === 'onChainStatus') {
+        const order = (r: WeatherRecord) => {
+          if (r.status !== 'completed' || !r.blockchain.txid) return 2;
+          return r.blockchain.blockHeight ? 0 : 1;
+        };
+        cmp = order(a) - order(b);
+      }
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
+  }, [records, sortKey, sortDir]);
+
   const lastBlockHeight =
     station?.lastBlockHeight ??
     records.find((r) => r.blockchain.blockHeight)?.blockchain.blockHeight ??
@@ -219,11 +244,11 @@ export function StationRecords() {
           <table className="w-full text-left">
             <thead>
               <tr className="bg-gray-900/60">
-                <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase tracking-wide">Timestamp</th>
+                <SortableTh label="Timestamp" sortKey="timestamp" currentSort={sortKey} currentDir={sortDir} onSort={handleSort} />
                 <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase tracking-wide">TxID</th>
-                <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase tracking-wide">Block Height</th>
+                <SortableTh label="Block Height" sortKey="blockHeight" currentSort={sortKey} currentDir={sortDir} onSort={handleSort} />
                 <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase tracking-wide">QC Status</th>
-                <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase tracking-wide">On-Chain Status</th>
+                <SortableTh label="On-Chain Status" sortKey="onChainStatus" currentSort={sortKey} currentDir={sortDir} onSort={handleSort} />
               </tr>
             </thead>
             {/* Dim rows during background page fetches rather than blanking the table */}
@@ -233,7 +258,7 @@ export function StationRecords() {
                   <td colSpan={5} className="px-4 py-12 text-center text-gray-500">No records found</td>
                 </tr>
               ) : (
-                records.map((record) => (
+                sortedRecords.map((record) => (
                   <TxRow
                     key={record.id}
                     record={record}
