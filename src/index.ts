@@ -1,5 +1,5 @@
 /**
- * Weather Chain - Bitcoin Script encoding system for weather data
+ * WeatherProof - Bitcoin Script encoding system for weather data
  *
  * This library provides utilities to encode weather data into Bitcoin Script format
  * for storage on the BSV blockchain. Each field is pushed as a separate chunk onto

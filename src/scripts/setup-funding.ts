@@ -9,7 +9,7 @@ import { validateConfig } from '../config/env';
  */
 async function setup(): Promise<void> {
   console.log('='.repeat(60));
-  console.log('Weather Chain - Funding Basket Setup');
+  console.log('WeatherProof - Funding Basket Setup');
   console.log('='.repeat(60));
 
   try {

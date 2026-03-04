@@ -1,5 +1,5 @@
 {
-  "name": "weather-chain",
+  "name": "weatherproof",
   "version": "0.1.0",
   "description": "Bitcoin script encoding system for weather data on BSV blockchain",
   "main": "dist/index.js",
