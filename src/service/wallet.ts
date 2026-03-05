@@ -20,13 +20,16 @@ export function queueWeatherTx<T>(fn: () => Promise<T>): Promise<T> {
 
 /**
  * Queue for funding output creation.
+ * Only ever allows one funding action to run at a time.
  */
-let fundingQueue: Promise<unknown> = Promise.resolve();
+let fundingAction: Promise<unknown> | null = null;
 
 export function queueFundingAction<T>(fn: () => Promise<T>): Promise<T> {
-  const result = fundingQueue.then(fn);
-  fundingQueue = result.then(() => {}, () => {});
-  return result;
+  if (fundingAction !== null) {
+    return fundingAction as Promise<T>;
+  }
+  fundingAction = fn().finally(() => { fundingAction = null; });
+  return fundingAction as Promise<T>;
 }
 
 export async function getWallet (): Promise<WalletInterface> {
