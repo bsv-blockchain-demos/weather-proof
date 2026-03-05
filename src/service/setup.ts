@@ -46,12 +46,12 @@ export function decrementCachedFundingCount(): void {
 export async function getFundingOutputCount(): Promise<number> {
   const wallet = await getWallet();
 
-  const { outputs } = await wallet.listOutputs({
+  const outputs = await wallet.listOutputs({
     basket: 'funding',
   });
 
-  cachedFundingCount = outputs.length;
-  return outputs.length;
+  cachedFundingCount = outputs.totalOutputs;
+  return outputs.totalOutputs;
 }
 
 /**
