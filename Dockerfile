@@ -9,6 +9,9 @@ WORKDIR /app
 COPY package*.json ./
 COPY tsconfig.json ./
 
+ARG VITE_API_URL
+ENV VITE_API_URL=$VITE_API_URL
+
 # Install all dependencies (including dev dependencies for build)
 RUN npm install
 

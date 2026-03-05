@@ -60,7 +60,7 @@ jobs:
             ghcr.io/bsv-blockchain-demos/weather-proof-front:${{ github.sha }}
             ghcr.io/bsv-blockchain-demos/weather-proof-front:${{ needs.get_tag.outputs.deployment_tag }}
           build-args: |
-            VITE_API_BASE=${{ vars.VITE_API_BASE }}
+            VITE_API_URL=${{ vars.VITE_API_BASE }}
 
       # Step 4: Build and push the backend Docker image
       - name: Build and push frontend Docker image
