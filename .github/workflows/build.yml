@@ -59,6 +59,8 @@ jobs:
           tags: |
             ghcr.io/bsv-blockchain-demos/weather-chain-front:${{ github.sha }}
             ghcr.io/bsv-blockchain-demos/weather-chain-front:${{ needs.get_tag.outputs.deployment_tag }}
+          build-args: |
+            VITE_API_BASE=${{ vars.VITE_API_BASE }}
 
       # Step 4: Build and push the backend Docker image
       - name: Build and push frontend Docker image
