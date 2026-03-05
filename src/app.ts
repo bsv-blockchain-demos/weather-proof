@@ -29,7 +29,7 @@ const state: AppState = {
  */
 async function initialize(): Promise<void> {
   console.log('='.repeat(60));
-  console.log('Weather Chain - BSV Blockchain Weather Data Service');
+  console.log('WeatherProof - BSV Blockchain Weather Data Service');
   console.log('='.repeat(60));
 
   // Validate configuration

@@ -10,7 +10,7 @@ function App() {
       <header className="bg-gray-900 border-b border-gray-700 sticky top-0 z-10">
         <div className="max-w-7xl mx-auto px-4 py-4 sm:px-6 lg:px-8">
           <Link to="/" className="text-xl font-bold text-white hover:text-indigo-400 transition-colors">
-            WeatherChain
+            WeatherProof
           </Link>
         </div>
       </header>
@@ -28,7 +28,7 @@ function App() {
       <footer className="bg-gray-900 border-t border-gray-700 mt-auto">
         <div className="max-w-7xl mx-auto px-4 py-4 sm:px-6 lg:px-8">
           <p className="text-sm text-gray-600 text-center">
-            WeatherChain &mdash; BSV Blockchain Weather Data
+            WeatherProof &mdash; BSV Blockchain Weather Data
           </p>
         </div>
       </footer>
