@@ -1,9 +1,8 @@
-import { Script } from '@bsv/sdk';
+import { Script, OP, Hash } from '@bsv/sdk';
 import { WeatherData } from './types';
 import { FIELD_SCHEMA } from './schema';
 import { VERSION, FLOAT_SCALE } from './constants';
 import { encodeFloat } from '../utils/float-encoder';
-import { OP } from '@bsv/sdk';
 
 /**
  * Encoder for weather data into Bitcoin Script format.
@@ -74,5 +73,21 @@ export class WeatherDataEncoder {
    */
   encodeToHex(data: WeatherData): string {
     return this.encode(data).toHex();
+  }
+
+  /**
+   * Encodes weather data as an OP_RETURN script containing only the SHA-256
+   * hash of the full encoded data, rather than the data itself.
+   *
+   * @param data - The weather data to encode
+   * @returns A Script with OP_FALSE OP_RETURN <sha256(encoded_data)>
+   */
+  encodeHash(data: WeatherData): Script {
+    const hash = Hash.sha256(JSON.stringify(data));
+    const script = new Script();
+    script.writeOpCode(OP.OP_FALSE);
+    script.writeOpCode(OP.OP_RETURN);
+    script.writeBin(hash);
+    return script;
   }
 }

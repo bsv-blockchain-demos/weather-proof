@@ -31,15 +31,12 @@ export async function createWeatherTransaction(records: IWeatherRecord[]): Promi
   const wallet = await getWallet();
   const encoder = new WeatherDataEncoder();
 
-  // Create weather data outputs
-  const weatherOutputs = records.map((record) => {
-    const script = encoder.encode(record.data);
-    return {
-      satoshis: 0,
-      lockingScript: script.toHex(),
-      outputDescription: 'weather',
-    };
-  });
+  // Create weather data outputs — store only the SHA-256 hash of the encoded data
+  const weatherOutputs = records.map((record) => ({
+    satoshis: 0,
+    lockingScript: encoder.encodeHash(record.data).toHex(),
+    outputDescription: 'weather',
+  }));
 
   try {
     // listOutputs + createAction must be inside the same queue slot
