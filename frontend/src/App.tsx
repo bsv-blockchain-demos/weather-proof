@@ -8,11 +8,11 @@ import { ThemeContext, useThemeProvider } from './hooks/useTheme';
 
 function ExplorerLayout() {
   return (
-    <div className="min-h-screen bg-storm-50 dark:bg-gray-900 flex flex-col">
-      <header className="bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-4 py-4 sm:px-6 lg:px-8 flex items-center justify-between">
-          <Link to="/explorer" className="text-xl font-bold text-gray-900 dark:text-white hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors">
-            WeatherProof
+    <div className="min-h-screen bg-storm-50 dark:bg-storm-950 flex flex-col">
+      <header className="bg-white/80 dark:bg-storm-950/80 backdrop-blur-lg border-b border-storm-700/20 dark:border-storm-700/40 sticky top-0 z-10">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center justify-between h-16">
+          <Link to="/" className="font-display font-extrabold text-xl text-storm-950 dark:text-storm-100 hover:text-sunrise-500 transition-colors">
+            Weather Proof
           </Link>
           <ThemeToggle />
         </div>
@@ -22,10 +22,10 @@ function ExplorerLayout() {
         <Outlet />
       </main>
 
-      <footer className="bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-700 mt-auto">
+      <footer className="bg-white dark:bg-storm-900 border-t border-gray-200 dark:border-storm-700 mt-auto">
         <div className="max-w-7xl mx-auto px-4 py-4 sm:px-6 lg:px-8">
-          <p className="text-sm text-gray-400 dark:text-gray-600 text-center">
-            WeatherProof &mdash; BSV Blockchain Weather Data
+          <p className="text-sm text-storm-600 dark:text-storm-400 text-center">
+            Weather Proof &mdash; BSV Blockchain Weather Data
           </p>
         </div>
       </footer>

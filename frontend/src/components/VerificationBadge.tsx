@@ -37,7 +37,7 @@ export function VerificationBadge({
   // Show verification status for completed records
   if (isVerifying) {
     return (
-      <span className="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300">
+      <span className="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-storm-200 dark:bg-storm-700 text-storm-800 dark:text-storm-200">
         <svg className="animate-spin -ml-0.5 mr-1.5 h-3 w-3" fill="none" viewBox="0 0 24 24">
           <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
           <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
@@ -74,7 +74,7 @@ export function VerificationBadge({
     return (
       <button
         onClick={onVerify}
-        className="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-indigo-900/50 text-indigo-400 border border-indigo-700/50 hover:bg-indigo-900/80 transition-colors"
+        className="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-sunrise-400/10 text-sunrise-400 border border-sunrise-400/30 hover:bg-sunrise-400/20 transition-colors"
       >
         <svg className="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />

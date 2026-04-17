@@ -36,9 +36,9 @@ interface StatCardProps {
 
 function StatCard({ label, value }: StatCardProps) {
   return (
-    <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-5 py-4 flex flex-col gap-1 min-w-0">
-      <span className="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide">{label}</span>
-      <span className="text-xl font-semibold text-gray-900 dark:text-white truncate">{value}</span>
+    <div className="bg-white dark:bg-storm-850 border border-storm-200 dark:border-storm-700 rounded-lg px-5 py-4 flex flex-col gap-1 min-w-0">
+      <span className="text-xs text-storm-600 dark:text-storm-400 uppercase tracking-wide">{label}</span>
+      <span className="text-xl font-semibold text-storm-950 dark:text-storm-100 truncate">{value}</span>
     </div>
   );
 }
@@ -57,8 +57,8 @@ function LiveDot({ status }: { status: 'connecting' | 'connected' | 'disconnecte
   }
   if (status === 'connecting') {
     return (
-      <span className="inline-flex items-center gap-1.5 text-xs text-gray-400 dark:text-gray-500">
-        <span className="w-2 h-2 rounded-full bg-gray-400 dark:bg-gray-500" />
+      <span className="inline-flex items-center gap-1.5 text-xs text-storm-400 dark:text-storm-400">
+        <span className="w-2 h-2 rounded-full bg-storm-400" />
         Connecting…
       </span>
     );
@@ -84,11 +84,11 @@ function StationRow({ station, onClick, onMouseEnter }: StationRowProps) {
     <tr
       onClick={onClick}
       onMouseEnter={onMouseEnter}
-      className="border-t border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-700/50 cursor-pointer transition-colors"
+      className="border-t border-storm-200 dark:border-storm-700 hover:bg-storm-100 dark:hover:bg-storm-700/50 cursor-pointer transition-colors"
     >
-      <td className="px-4 py-3 text-sm font-mono text-gray-700 dark:text-gray-300">{station.stationId}</td>
-      <td className="px-4 py-3 text-sm text-gray-900 dark:text-white font-medium">{station.name}</td>
-      <td className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">{station.location || '—'}</td>
+      <td className="px-4 py-3 text-sm font-mono text-storm-800 dark:text-storm-200">{station.stationId}</td>
+      <td className="px-4 py-3 text-sm text-storm-950 dark:text-storm-100 font-medium">{station.name}</td>
+      <td className="px-4 py-3 text-sm text-storm-600 dark:text-storm-400">{station.location || '—'}</td>
       <td className="px-4 py-3 text-sm">
         <span className="inline-flex items-center gap-1.5">
           <span
@@ -101,18 +101,18 @@ function StationRow({ station, onClick, onMouseEnter }: StationRowProps) {
           </span>
         </span>
       </td>
-      <td className="px-4 py-3 text-sm text-gray-700 dark:text-gray-300 font-mono whitespace-nowrap">
+      <td className="px-4 py-3 text-sm text-storm-800 dark:text-storm-200 font-mono whitespace-nowrap">
         {formatDateTime(station.lastReading)}
       </td>
-      <td className="px-4 py-3 text-sm text-gray-700 dark:text-gray-300">
+      <td className="px-4 py-3 text-sm text-storm-800 dark:text-storm-200">
         {station.lastTemp !== null ? `${station.lastTemp}°C` : '—'}
       </td>
-      <td className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400 capitalize">
+      <td className="px-4 py-3 text-sm text-storm-600 dark:text-storm-400 capitalize">
         {station.lastConditions || '—'}
       </td>
       <td className="px-4 py-3 text-sm text-right">
-        <span className="text-indigo-400 font-medium">{station.txRecords.toLocaleString()}</span>
-        <span className="text-gray-400 dark:text-gray-600 ml-1 text-xs">›</span>
+        <span className="text-sunrise-400 font-medium">{station.txRecords.toLocaleString()}</span>
+        <span className="text-storm-400 dark:text-storm-600 ml-1 text-xs">›</span>
       </td>
     </tr>
   );
@@ -214,7 +214,7 @@ export function Dashboard() {
   if (isLoading) {
     return (
       <div className="flex justify-center items-center py-24">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-400" />
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-sunrise-400" />
       </div>
     );
   }
@@ -223,7 +223,7 @@ export function Dashboard() {
     return (
       <div className="text-center py-24">
         <p className="text-red-400">Failed to load dashboard</p>
-        <p className="text-gray-400 dark:text-gray-500 text-sm mt-2">{(error as Error).message}</p>
+        <p className="text-storm-400 dark:text-storm-400 text-sm mt-2">{(error as Error).message}</p>
       </div>
     );
   }
@@ -237,7 +237,7 @@ export function Dashboard() {
       {stats && (
         <div>
           <div className="flex items-center justify-between mb-2">
-            <span className="text-xs text-gray-400 dark:text-gray-500 uppercase tracking-wide">Global Stats</span>
+            <span className="text-xs text-storm-400 dark:text-storm-400 uppercase tracking-wide">Global Stats</span>
             <LiveDot status={liveStatus} />
           </div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -250,9 +250,9 @@ export function Dashboard() {
       )}
 
       {/* Station Table */}
-      <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+      <div className="bg-white dark:bg-storm-850 border border-storm-200 dark:border-storm-700 rounded-lg overflow-hidden">
         {/* Toolbar */}
-        <div className="flex items-center gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+        <div className="flex items-center gap-3 px-4 py-3 border-b border-storm-200 dark:border-storm-700">
           <div className="flex-1 flex items-center gap-2 max-w-sm">
             <input
               type="text"
@@ -260,18 +260,18 @@ export function Dashboard() {
               onChange={(e) => setSearchInput(e.target.value)}
               onKeyDown={handleSearchKey}
               placeholder="Search by name, location or ID…"
-              className="w-full px-3 py-1.5 text-sm bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded text-gray-800 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-indigo-500"
+              className="w-full px-3 py-1.5 text-sm bg-storm-50 dark:bg-storm-900 border border-gray-300 dark:border-storm-600 rounded text-gray-800 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-sunrise-400"
             />
             <button
               onClick={handleSearch}
-              className="px-3 py-1.5 text-sm bg-indigo-600 hover:bg-indigo-700 text-white rounded transition-colors whitespace-nowrap"
+              className="px-3 py-1.5 text-sm bg-sunrise-400 hover:bg-sunrise-300 text-storm-950 rounded transition-colors whitespace-nowrap"
             >
               Search
             </button>
             {search && (
               <button
                 onClick={handleClear}
-                className="px-2 py-1.5 text-sm text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors"
+                className="px-2 py-1.5 text-sm text-storm-600 dark:text-storm-400 hover:text-gray-900 dark:hover:text-white transition-colors"
               >
                 ✕
               </button>
@@ -280,10 +280,10 @@ export function Dashboard() {
           <div className="ml-auto flex items-center gap-3">
             {/* Subtle fetching indicator — shows when paginating/refetching, not on first load */}
             {isFetching && !isLoading && (
-              <div className="w-4 h-4 rounded-full border-2 border-indigo-400 border-t-transparent animate-spin" />
+              <div className="w-4 h-4 rounded-full border-2 border-sunrise-400 border-t-transparent animate-spin" />
             )}
             {pagination && (
-              <span className="text-xs text-gray-400 dark:text-gray-500 whitespace-nowrap">
+              <span className="text-xs text-storm-400 dark:text-storm-400 whitespace-nowrap">
                 {pagination.total.toLocaleString()} station{pagination.total !== 1 ? 's' : ''}
               </span>
             )}
@@ -293,14 +293,14 @@ export function Dashboard() {
         <div className="overflow-x-auto">
           <table className="w-full text-left">
             <thead>
-              <tr className="bg-gray-100 dark:bg-gray-900/60">
+              <tr className="bg-storm-100 dark:bg-storm-900/60">
                 <SortableTh label="Station ID" sortKey="stationId" currentSort={sortKey} currentDir={sortDir} onSort={handleSort} />
-                <th className="px-4 py-3 text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">Name</th>
-                <th className="px-4 py-3 text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">Location</th>
+                <th className="px-4 py-3 text-xs font-medium text-storm-600 dark:text-storm-400 uppercase tracking-wide">Name</th>
+                <th className="px-4 py-3 text-xs font-medium text-storm-600 dark:text-storm-400 uppercase tracking-wide">Location</th>
                 <SortableTh label="Status" sortKey="status" currentSort={sortKey} currentDir={sortDir} onSort={handleSort} />
                 <SortableTh label="Last Reading" sortKey="lastReading" currentSort={sortKey} currentDir={sortDir} onSort={handleSort} />
                 <SortableTh label="Temp" sortKey="lastTemp" currentSort={sortKey} currentDir={sortDir} onSort={handleSort} />
-                <th className="px-4 py-3 text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">Conditions</th>
+                <th className="px-4 py-3 text-xs font-medium text-storm-600 dark:text-storm-400 uppercase tracking-wide">Conditions</th>
                 <SortableTh label="Tx Records" sortKey="txRecords" currentSort={sortKey} currentDir={sortDir} onSort={handleSort} right />
               </tr>
             </thead>
@@ -308,7 +308,7 @@ export function Dashboard() {
             <tbody className={isFetching && !isLoading ? 'opacity-50 transition-opacity duration-150' : 'transition-opacity duration-150'}>
               {stations.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-4 py-12 text-center text-gray-400 dark:text-gray-500">
+                  <td colSpan={8} className="px-4 py-12 text-center text-storm-400 dark:text-storm-400">
                     {search ? `No stations matching "${search}"` : 'No stations found'}
                   </td>
                 </tr>
@@ -328,21 +328,21 @@ export function Dashboard() {
 
         {/* Pagination footer */}
         {pagination && pagination.totalPages > 1 && (
-          <div className="flex items-center justify-between px-4 py-3 border-t border-gray-200 dark:border-gray-700">
+          <div className="flex items-center justify-between px-4 py-3 border-t border-storm-200 dark:border-storm-700">
             <button
               onClick={() => setPage((p) => Math.max(1, p - 1))}
               disabled={page === 1 || isFetching}
-              className="px-3 py-1.5 text-sm text-gray-700 dark:text-gray-300 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 rounded disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              className="px-3 py-1.5 text-sm text-storm-800 dark:text-storm-200 bg-storm-200 dark:bg-storm-700 hover:bg-storm-200 dark:hover:bg-storm-600 rounded disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               &lsaquo; Prev
             </button>
-            <span className="text-sm text-gray-500 dark:text-gray-400">
+            <span className="text-sm text-storm-600 dark:text-storm-400">
               Page {pagination.page} of {pagination.totalPages}
             </span>
             <button
               onClick={() => setPage((p) => Math.min(pagination.totalPages, p + 1))}
               disabled={page === pagination.totalPages || isFetching}
-              className="px-3 py-1.5 text-sm text-gray-700 dark:text-gray-300 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 rounded disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              className="px-3 py-1.5 text-sm text-storm-800 dark:text-storm-200 bg-storm-200 dark:bg-storm-700 hover:bg-storm-200 dark:hover:bg-storm-600 rounded disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               Next &rsaquo;
             </button>
