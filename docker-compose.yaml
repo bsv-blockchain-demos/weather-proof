@@ -76,10 +76,10 @@ services:
     depends_on:
       - app
     environment:
-      VITE_API_URL: http://app:3001
+      VITE_API_URL: http://localhost:3001
       VITE_BSV_NETWORK: ${BSV_NETWORK:-main}
     ports:
-      - "5173:80"
+      - "5173:3000"
     networks:
       - weather-chain-network
 

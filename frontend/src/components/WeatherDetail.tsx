@@ -83,8 +83,8 @@ export function WeatherDetail() {
     return (
       <div className="text-center py-12">
         <p className="text-red-400">Failed to load weather record</p>
-        <p className="text-gray-500 text-sm mt-2">{error?.message || 'Record not found'}</p>
-        <Link to="/" className="mt-4 inline-block text-indigo-400 hover:underline">
+        <p className="text-gray-400 dark:text-gray-500 text-sm mt-2">{error?.message || 'Record not found'}</p>
+        <Link to="/explorer" className="mt-4 inline-block text-indigo-400 hover:underline">
           Back to dashboard
         </Link>
       </div>
@@ -106,14 +106,14 @@ export function WeatherDetail() {
       </div>
 
       {/* Main Info Card */}
-      <div className="bg-gray-800 rounded-lg border border-gray-700 p-6 mb-6">
+      <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6 mb-6">
         <div className="flex items-start justify-between">
           <div>
-            <h1 className="text-3xl font-bold text-white">
+            <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
               {formatTemp(data.air_temperature)}
             </h1>
-            <p className="text-lg text-gray-400 capitalize mt-1">{data.conditions}</p>
-            <p className="text-sm text-gray-500 mt-2">
+            <p className="text-lg text-gray-500 dark:text-gray-400 capitalize mt-1">{data.conditions}</p>
+            <p className="text-sm text-gray-400 dark:text-gray-500 mt-2">
               Station {record.stationId} &middot; {formatTime(record.timestamp)}
             </p>
           </div>
@@ -131,11 +131,11 @@ export function WeatherDetail() {
 
       {/* Blockchain Info */}
       {record.blockchain.txid && (
-        <div className="bg-gray-800 rounded-lg border border-gray-700 p-6 mb-6">
-          <h2 className="text-base font-semibold text-white mb-4">Blockchain Record</h2>
+        <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6 mb-6">
+          <h2 className="text-base font-semibold text-gray-900 dark:text-white mb-4">Blockchain Record</h2>
           <dl className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <dt className="text-sm text-gray-500">Transaction ID</dt>
+              <dt className="text-sm text-gray-400 dark:text-gray-500">Transaction ID</dt>
               <dd className="font-mono text-sm break-all mt-1">
                 <a
                   href={`https://${network === 'main' ? 'whatsonchain.com' : 'test.whatsonchain.com'}/tx/${record.blockchain.txid}`}
@@ -148,12 +148,12 @@ export function WeatherDetail() {
               </dd>
             </div>
             <div>
-              <dt className="text-sm text-gray-500">Output Index</dt>
-              <dd className="font-mono text-sm text-gray-300 mt-1">{record.blockchain.outputIndex}</dd>
+              <dt className="text-sm text-gray-400 dark:text-gray-500">Output Index</dt>
+              <dd className="font-mono text-sm text-gray-700 dark:text-gray-300 mt-1">{record.blockchain.outputIndex}</dd>
             </div>
             <div>
-              <dt className="text-sm text-gray-500">Block Height</dt>
-              <dd className="font-mono text-sm text-gray-300 mt-1">
+              <dt className="text-sm text-gray-400 dark:text-gray-500">Block Height</dt>
+              <dd className="font-mono text-sm text-gray-700 dark:text-gray-300 mt-1">
                 {record.blockchain.blockHeight
                   ? record.blockchain.blockHeight.toLocaleString()
                   : verificationResult?.blockHeight
@@ -184,15 +184,15 @@ export function WeatherDetail() {
       {/* Weather Data Groups */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {Object.entries(fieldGroups).map(([groupName, fields]) => (
-          <div key={groupName} className="bg-gray-800 rounded-lg border border-gray-700 p-6">
-            <h2 className="text-sm font-semibold text-gray-300 mb-4 uppercase tracking-wide">{groupName}</h2>
+          <div key={groupName} className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
+            <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-4 uppercase tracking-wide">{groupName}</h2>
             <dl className="space-y-2.5">
               {fields.map((field) => {
                 const value = data[field.key as keyof typeof data];
                 return (
                   <div key={field.key} className="flex justify-between">
-                    <dt className="text-sm text-gray-500">{field.label}</dt>
-                    <dd className="text-sm font-medium text-gray-200">
+                    <dt className="text-sm text-gray-400 dark:text-gray-500">{field.label}</dt>
+                    <dd className="text-sm font-medium text-gray-800 dark:text-gray-200">
                       {field.format(value as never)}
                     </dd>
                   </div>
@@ -204,21 +204,21 @@ export function WeatherDetail() {
       </div>
 
       {/* Record Metadata */}
-      <div className="mt-4 bg-gray-800 rounded-lg border border-gray-700 p-6">
-        <h2 className="text-sm font-semibold text-gray-300 mb-4 uppercase tracking-wide">Record Metadata</h2>
+      <div className="mt-4 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
+        <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-4 uppercase tracking-wide">Record Metadata</h2>
         <dl className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div>
-            <dt className="text-sm text-gray-500">Record ID</dt>
-            <dd className="font-mono text-xs text-gray-400 mt-1 break-all">{record.id}</dd>
+            <dt className="text-sm text-gray-400 dark:text-gray-500">Record ID</dt>
+            <dd className="font-mono text-xs text-gray-500 dark:text-gray-400 mt-1 break-all">{record.id}</dd>
           </div>
           <div>
-            <dt className="text-sm text-gray-500">Created At</dt>
-            <dd className="text-sm text-gray-300 mt-1">{formatTime(record.createdAt)}</dd>
+            <dt className="text-sm text-gray-400 dark:text-gray-500">Created At</dt>
+            <dd className="text-sm text-gray-700 dark:text-gray-300 mt-1">{formatTime(record.createdAt)}</dd>
           </div>
           {record.processedAt && (
             <div>
-              <dt className="text-sm text-gray-500">Processed At</dt>
-              <dd className="text-sm text-gray-300 mt-1">{formatTime(record.processedAt)}</dd>
+              <dt className="text-sm text-gray-400 dark:text-gray-500">Processed At</dt>
+              <dd className="text-sm text-gray-700 dark:text-gray-300 mt-1">{formatTime(record.processedAt)}</dd>
             </div>
           )}
         </dl>

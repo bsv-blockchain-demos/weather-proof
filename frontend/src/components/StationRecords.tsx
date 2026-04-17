@@ -59,17 +59,17 @@ function TxRow({ record, onClick, onMouseEnter }: TxRowProps) {
     <tr
       onClick={onClick}
       onMouseEnter={onMouseEnter}
-      className="border-t border-gray-700 hover:bg-gray-700/50 cursor-pointer transition-colors"
+      className="border-t border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-700/50 cursor-pointer transition-colors"
     >
-      <td className="px-4 py-3 text-sm font-mono text-gray-300 whitespace-nowrap">
+      <td className="px-4 py-3 text-sm font-mono text-gray-700 dark:text-gray-300 whitespace-nowrap">
         {formatDateTime(record.timestamp)}
       </td>
       <td className="px-4 py-3 text-sm font-mono">
         {record.blockchain.txid
           ? <span className="text-indigo-400">{truncateTxid(record.blockchain.txid)}</span>
-          : <span className="text-gray-600">—</span>}
+          : <span className="text-gray-400 dark:text-gray-600">—</span>}
       </td>
-      <td className="px-4 py-3 text-sm font-mono text-gray-300">
+      <td className="px-4 py-3 text-sm font-mono text-gray-700 dark:text-gray-300">
         {record.blockchain.blockHeight ?? '—'}
       </td>
       <td className="px-4 py-3 text-sm">
@@ -182,8 +182,8 @@ export function StationRecords() {
     return (
       <div className="text-center py-24">
         <p className="text-red-400">Failed to load records</p>
-        <p className="text-gray-500 text-sm mt-2">{(error as Error).message}</p>
-        <Link to="/" className="mt-4 inline-block text-indigo-400 hover:underline text-sm">
+        <p className="text-gray-400 dark:text-gray-500 text-sm mt-2">{(error as Error).message}</p>
+        <Link to="/explorer" className="mt-4 inline-block text-indigo-400 hover:underline text-sm">
           &larr; Back to dashboard
         </Link>
       </div>
@@ -193,20 +193,20 @@ export function StationRecords() {
   return (
     <div className="space-y-4">
       <div>
-        <Link to="/" className="text-indigo-400 hover:underline text-sm">
+        <Link to="/explorer" className="text-indigo-400 hover:underline text-sm">
           &larr; Back to dashboard
         </Link>
       </div>
 
       {/* Station Header */}
-      <div className="bg-gray-800 border border-gray-700 rounded-lg px-6 py-5">
+      <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-6 py-5">
         <div>
-          <h1 className="text-lg font-semibold text-white">
+          <h1 className="text-lg font-semibold text-gray-900 dark:text-white">
             Station {stationId}{station?.name ? ` — ${station.name}` : ''}
           </h1>
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1">
             {station?.location && (
-              <span className="text-sm text-gray-400">{station.location}</span>
+              <span className="text-sm text-gray-500 dark:text-gray-400">{station.location}</span>
             )}
             <span className="inline-flex items-center gap-1.5 text-sm">
               <span className={`w-2 h-2 rounded-full ${station?.status === 'online' ? 'bg-emerald-400' : 'bg-gray-500'}`} />
@@ -215,23 +215,23 @@ export function StationRecords() {
               </span>
             </span>
             {station?.lastReading && (
-              <span className="text-sm text-gray-400">
+              <span className="text-sm text-gray-500 dark:text-gray-400">
                 Last reading: {formatDateTime(station.lastReading)}
               </span>
             )}
           </div>
         </div>
 
-        <div className="flex gap-8 mt-4 pt-4 border-t border-gray-700">
+        <div className="flex gap-8 mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
           <div>
-            <p className="text-xs text-gray-500 uppercase tracking-wide">Total Records</p>
-            <p className="text-lg font-semibold text-white mt-0.5">
+            <p className="text-xs text-gray-400 dark:text-gray-500 uppercase tracking-wide">Total Records</p>
+            <p className="text-lg font-semibold text-gray-900 dark:text-white mt-0.5">
               {pagination?.total?.toLocaleString() ?? station?.txRecords?.toLocaleString() ?? '—'}
             </p>
           </div>
           <div>
-            <p className="text-xs text-gray-500 uppercase tracking-wide">Last Block Written</p>
-            <p className="text-lg font-semibold text-white mt-0.5">
+            <p className="text-xs text-gray-400 dark:text-gray-500 uppercase tracking-wide">Last Block Written</p>
+            <p className="text-lg font-semibold text-gray-900 dark:text-white mt-0.5">
               {lastBlockHeight?.toLocaleString() ?? '—'}
             </p>
           </div>
@@ -239,15 +239,15 @@ export function StationRecords() {
       </div>
 
       {/* Transactions Table */}
-      <div className="bg-gray-800 border border-gray-700 rounded-lg overflow-hidden">
+      <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left">
             <thead>
-              <tr className="bg-gray-900/60">
+              <tr className="bg-gray-100 dark:bg-gray-900/60">
                 <SortableTh label="Timestamp" sortKey="timestamp" currentSort={sortKey} currentDir={sortDir} onSort={handleSort} />
-                <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase tracking-wide">TxID</th>
+                <th className="px-4 py-3 text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">TxID</th>
                 <SortableTh label="Block Height" sortKey="blockHeight" currentSort={sortKey} currentDir={sortDir} onSort={handleSort} />
-                <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase tracking-wide">QC Status</th>
+                <th className="px-4 py-3 text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">QC Status</th>
                 <SortableTh label="On-Chain Status" sortKey="onChainStatus" currentSort={sortKey} currentDir={sortDir} onSort={handleSort} />
               </tr>
             </thead>
@@ -255,7 +255,7 @@ export function StationRecords() {
             <tbody className={isFetching && recordsData ? 'opacity-50 transition-opacity duration-150' : 'transition-opacity duration-150'}>
               {records.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-4 py-12 text-center text-gray-500">No records found</td>
+                  <td colSpan={5} className="px-4 py-12 text-center text-gray-400 dark:text-gray-500">No records found</td>
                 </tr>
               ) : (
                 sortedRecords.map((record) => (
@@ -273,27 +273,27 @@ export function StationRecords() {
 
         {/* Pagination footer */}
         {pagination && (
-          <div className="flex items-center justify-between px-4 py-3 border-t border-gray-700">
+          <div className="flex items-center justify-between px-4 py-3 border-t border-gray-200 dark:border-gray-700">
             <button
               onClick={() => setPage((p) => Math.max(1, p - 1))}
               disabled={page === 1 || isFetching}
-              className="px-3 py-1.5 text-sm text-gray-300 bg-gray-700 hover:bg-gray-600 rounded disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              className="px-3 py-1.5 text-sm text-gray-700 dark:text-gray-300 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 rounded disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               &lsaquo; Prev
             </button>
-            <div className="flex items-center gap-3 text-sm text-gray-400">
+            <div className="flex items-center gap-3 text-sm text-gray-500 dark:text-gray-400">
               {isFetching && (
                 <div className="w-3.5 h-3.5 rounded-full border-2 border-indigo-400 border-t-transparent animate-spin" />
               )}
               <span>
                 Page {pagination.page} of {pagination.totalPages}
-                <span className="ml-4 text-gray-500">Total: {pagination.total.toLocaleString()}</span>
+                <span className="ml-4 text-gray-400 dark:text-gray-500">Total: {pagination.total.toLocaleString()}</span>
               </span>
             </div>
             <button
               onClick={() => setPage((p) => Math.min(pagination.totalPages, p + 1))}
               disabled={page === pagination.totalPages || isFetching}
-              className="px-3 py-1.5 text-sm text-gray-300 bg-gray-700 hover:bg-gray-600 rounded disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              className="px-3 py-1.5 text-sm text-gray-700 dark:text-gray-300 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 rounded disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               Next &rsaquo;
             </button>
