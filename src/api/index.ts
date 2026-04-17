@@ -1,5 +1,6 @@
 import express, { Application, Request, Response, NextFunction } from 'express';
 import cors from 'cors';
+import rateLimit from 'express-rate-limit';
 import { config } from '../config/env';
 import weatherRoutes from './routes/weather';
 import proofRoutes from './routes/proof';
@@ -19,6 +20,26 @@ export function createApp(): Application {
     credentials: true,
   }));
   app.use(express.json());
+
+  // Rate limiting — 100 requests per minute per IP for general API
+  const apiLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 100,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many requests, please try again later' },
+  });
+  app.use('/api', apiLimiter);
+
+  // Stricter limit for SSE connections — 10 per minute per IP
+  const sseLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many SSE connections, please try again later' },
+  });
+  app.use('/api/events', sseLimiter);
 
   // Health check endpoint
   app.get('/api/health', (_req: Request, res: Response) => {

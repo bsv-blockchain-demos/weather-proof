@@ -51,7 +51,8 @@ router.post('/', async (req: Request, res: Response) => {
     // ── 1. Fan out all WoC queries concurrently ───────────────────────────────
     const wocResults = await Promise.allSettled(
       txids.map(async (txid) => {
-        const wocRes = await fetch(`${base}/tx/${txid}`);
+        const safeTxid = encodeURIComponent(txid);
+        const wocRes = await fetch(`${base}/tx/${safeTxid}`);
         if (wocRes.status === 404) return { txid, blockHeight: null };
         if (!wocRes.ok) throw new Error(`WoC ${wocRes.status} for ${txid}`);
         const data = await wocRes.json() as { blockheight?: number };

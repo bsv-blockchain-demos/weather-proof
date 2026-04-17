@@ -20,13 +20,17 @@ router.get('/', async (req: Request<object, object, object, WeatherListQuery>, r
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit ?? '20', 10)));
     const skip = (page - 1) * limit;
 
-    // Build filter
+    // Build filter — validate inputs to prevent NoSQL injection
     const filter: Record<string, unknown> = {};
-    if (req.query.status) {
+    const VALID_STATUSES: string[] = ['pending', 'processing', 'completed', 'failed'];
+    if (req.query.status && VALID_STATUSES.includes(req.query.status)) {
       filter.status = req.query.status;
     }
     if (req.query.stationId) {
-      filter.stationId = parseInt(req.query.stationId, 10);
+      const stationId = parseInt(req.query.stationId, 10);
+      if (!isNaN(stationId)) {
+        filter.stationId = stationId;
+      }
     }
 
     // Execute queries in parallel
