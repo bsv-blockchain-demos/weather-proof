@@ -15,11 +15,14 @@ import (
 //
 // -update exists so a DELIBERATE format change can be re-frozen. Run carelessly,
 // it just as easily launders a drifting encoder: regenerating the file after an
-// unintended change makes TestGolden pass against the new, wrong bytes. There is
-// currently no Go CI on this branch (.github/workflows only builds Docker
-// images) and no automated gate that stops this. Until a workflow runs
-// `git diff --exit-code internal/weather/testdata/golden/` after `-update`, the
-// only protection is reviewer discipline on this diff.
+// unintended change makes TestGolden pass against the new, wrong bytes.
+//
+// The gate against that is the "Golden file is not stale or laundered" step in
+// .github/workflows/go.yml, which runs -update and then requires
+// `git diff --exit-code internal/weather/testdata/golden/` to be clean. So a
+// regenerated file only survives CI when it equals what the committed encoder
+// already produced. Deleting or weakening that step removes the only automated
+// protection this file has.
 var updateGolden = flag.Bool("update", false, "rewrite testdata/golden/records.json from the current encoder")
 
 // goldenPath is a string literal, not a value built at run time. That is
