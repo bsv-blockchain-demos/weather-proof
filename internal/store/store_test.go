@@ -102,16 +102,24 @@ func TestChainStatusWireLiterals(t *testing.T) {
 // "bindable text" in this module.
 //
 // MEASURED against postgres:17-alpine with pgx v5.10.0: binding a string
-// containing 0x00 to even `SELECT $1::text` fails with `invalid byte sequence
-// for encoding "UTF8": 0x00 (SQLSTATE 22021)`. The extended query protocol
-// prevents INJECTION; it does not make the value legal. Without this gate
-// `GET /api/stations?search=%00` and `GET /api/weather/%00` are both 500s,
-// because Go's query and path decoding hand a literal NUL straight through.
+// containing 0x00, OR any malformed UTF-8 byte sequence, to even `SELECT
+// $1::text` fails with `invalid byte sequence for encoding "UTF8": ...
+// (SQLSTATE 22021)`. That includes a bare high bit ("\x80"), an out-of-range
+// byte ("\xff"), a truncated multibyte sequence ("\xe2\x98"), a lone UTF-16
+// surrogate re-encoded as bytes ("\xed\xa0\x80"), and an overlong encoding of
+// NUL ("\xc0\x80"). The extended query protocol prevents INJECTION; it does
+// not make the value legal. Without this gate `GET /api/stations?search=%00`
+// and `GET /api/weather/%80` are both 500s, because Go's query and path
+// decoding hand the raw bytes straight through without validating them.
 //
-// Nothing else is rejected. A tab, a newline, an emoji and a lone surrogate
-// escape are all bindable, and rejecting them would break real search terms.
+// Nothing else is rejected. A tab, a newline, an emoji and any well-formed
+// UTF-8 string are all bindable, and rejecting them would break real search
+// terms.
 func TestValidTextRejectsOnlyWhatPostgresCannotBind(t *testing.T) {
-	bad := []string{"\x00", "\x00nul", "nul\x00", "a\x00b", string([]byte{0})}
+	bad := []string{
+		"\x00", "\x00nul", "nul\x00", "a\x00b", string([]byte{0}),
+		"\xff", "\x80", "\xe2\x98", "\xed\xa0\x80", "\xc0\x80",
+	}
 	for _, s := range bad {
 		if err := store.ValidText(s); !errors.Is(err, store.ErrInvalidText) {
 			t.Errorf("ValidText(%q) = %v, want store.ErrInvalidText", s, err)

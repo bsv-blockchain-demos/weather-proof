@@ -12,6 +12,7 @@ import (
 	"errors"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -34,28 +35,34 @@ var (
 
 	// ErrInvalidText reports a string that a Postgres text parameter cannot
 	// carry at all. See ValidText.
-	ErrInvalidText = errors.New("store: text value contains a NUL byte")
+	ErrInvalidText = errors.New("store: text value contains a NUL byte or malformed UTF-8")
 )
 
 // ValidText reports whether s can be bound to a text parameter.
 //
-// There is exactly one thing wrong with a Go string from Postgres's point of
-// view, and it is the NUL byte. Measured against postgres:17-alpine with pgx
-// v5.10.0: binding a string containing 0x00 to `SELECT $1::text` fails with
-// `invalid byte sequence for encoding "UTF8": 0x00 (SQLSTATE 22021)`. The
-// extended query protocol prevents INJECTION — it does not make the value
-// legal — so a request carrying %00 is a 500 unless something rejects it
-// first, and Go's query-string and path decoding both hand a literal NUL
-// straight through.
+// MEASURED against postgres:17-alpine with pgx v5.10.0: binding a string
+// containing 0x00, OR any malformed UTF-8 byte sequence, to `SELECT
+// $1::text` fails with `invalid byte sequence for encoding "UTF8": ...
+// (SQLSTATE 22021)`. That includes a bare high bit (0x80), an out-of-range
+// byte (0xff), a truncated multibyte sequence, a lone UTF-16 surrogate
+// re-encoded as bytes, and an overlong encoding of NUL. The extended query
+// protocol prevents INJECTION — it does not make the value legal — so a
+// request carrying %00 or %80 is a 500 unless something rejects it first,
+// and Go's query-string and path decoding both hand the raw bytes straight
+// through without validating them.
+//
+// NUL needs its own check IN ADDITION to utf8.ValidString: NUL is valid
+// UTF-8, so utf8.ValidString("\x00") reports true. Replacing the NUL check
+// with utf8.ValidString alone would silently let 0x00 back through.
 //
 // This is deliberately a leaf function in the datastore-agnostic package,
 // because BOTH layers need it and for different reasons: the API layer maps a
 // failure to 400 (the right status), and internal/store/postgres treats a
 // failure as a MISS (so the store is total and no future caller can produce a
-// 500 from user input). Nothing else is rejected: tabs, newlines and any valid
-// UTF-8 are legitimate search terms.
+// 500 from user input). Nothing else is rejected: tabs, newlines and any
+// well-formed UTF-8 are legitimate search terms.
 func ValidText(s string) error {
-	if strings.ContainsRune(s, 0) {
+	if !utf8.ValidString(s) || strings.ContainsRune(s, 0) {
 		return ErrInvalidText
 	}
 	return nil
