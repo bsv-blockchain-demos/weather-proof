@@ -1,10 +1,13 @@
 package weather
 
 import (
+	"encoding/hex"
 	"errors"
+	"math/big"
 	"testing"
 
 	"github.com/bsv-blockchain/go-sdk/script"
+	"github.com/bsv-blockchain/go-sdk/script/interpreter"
 )
 
 // TestAppendScriptNumTable pins the number encoding. Every hex string here was
@@ -86,23 +89,62 @@ func TestAppendScriptNumOutOfRange(t *testing.T) {
 }
 
 // TestScriptNumberBytesMutatesItsReceiver documents the go-sdk gotcha that
-// forces appendScriptNum to build a fresh ScriptNumber on every call. If a
-// future SDK release fixes it this test fails, which is the correct outcome: the
-// comment in scriptnum.go then needs updating.
+// forces appendScriptNum to build a fresh ScriptNumber on every call, and
+// guards against a regression to a cached-and-reused ScriptNumber. If a
+// future SDK release fixes the raw mutation, the first section below fails,
+// which is the correct outcome: the comment in scriptnum.go then needs
+// updating.
+//
+// The guard cannot merely compare two calls' outputs to each other. Under a
+// cache-and-reuse bug (one *ScriptNumber memoized per value and reused across
+// calls to appendScriptNum), the FIRST call anywhere in the whole test binary
+// for a given value returns the CORRECT bytes - the mutation is a side effect
+// of that call, not a precondition for it - and every call after that, in any
+// test, returns the SAME wrong bytes. If another test earlier in this file
+// (alphabetically, or by declaration order) already called
+// appendScriptNum(-128), the cache is already poisoned before this test's
+// first call runs, so both of this test's calls would return the identical
+// wrong answer and an equality check between them would pass. Instead, each
+// call here is checked against the literal known-correct encoding, so a
+// poisoned cache is caught on whichever call first observes it, independent
+// of what ran before this test or in what order tests run.
 func TestScriptNumberBytesMutatesItsReceiver(t *testing.T) {
-	first := &script.Script{}
-	if err := appendScriptNum(first, -128); err != nil {
-		t.Fatalf("first: %v", err)
+	// The raw go-sdk behavior this guard exists because of: Bytes() mutates
+	// its receiver on a negative value, so calling it twice on the SAME
+	// ScriptNumber gives a different (wrong) answer the second time.
+	sn := &interpreter.ScriptNumber{Val: big.NewInt(-128), AfterGenesis: true}
+
+	rawFirst := hex.EncodeToString(sn.Bytes())
+	if rawFirst != "8080" {
+		t.Fatalf("raw ScriptNumber(-128).Bytes() first call = %s, want 8080", rawFirst)
 	}
 
-	second := &script.Script{}
-	if err := appendScriptNum(second, -128); err != nil {
-		t.Fatalf("second: %v", err)
+	rawSecond := hex.EncodeToString(sn.Bytes())
+	if rawSecond != "8000" {
+		t.Fatalf("raw ScriptNumber(-128).Bytes() second call = %s, want 8000 (mutation not reproduced; did go-sdk change?)",
+			rawSecond)
 	}
 
-	if first.String() != second.String() {
-		t.Fatalf("two calls with -128 gave %s then %s: a ScriptNumber is being reused across calls",
-			first.String(), second.String())
+	if sn.Val.Int64() != 128 {
+		t.Fatalf("raw ScriptNumber(-128).Val after two Bytes() calls = %v, want 128", sn.Val)
+	}
+
+	// The property appendScriptNum must actually have: encoding -128 gives
+	// the correct bytes EVERY time, checked against ground truth rather than
+	// against a sibling call, so a cached-and-reused ScriptNumber cannot hide
+	// behind two equally wrong answers.
+	for call := range 3 {
+		s := &script.Script{}
+
+		appendErr := appendScriptNum(s, -128)
+		if appendErr != nil {
+			t.Fatalf("call %d: appendScriptNum(-128): %v", call, appendErr)
+		}
+
+		if got := s.String(); got != "028080" {
+			t.Fatalf("call %d: appendScriptNum(-128) = %s, want 028080 (a ScriptNumber is being cached and reused across calls)",
+				call, got)
+		}
 	}
 }
 
