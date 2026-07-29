@@ -41,12 +41,14 @@ jobs:
       - name: Test
         run: go test ./... -count=1
 
-      # .golangci.json is config format version 2, so the linter must be v2.x.
-      # Pinned to the version the constants and lint traps in
+      # .golangci.json is config format version 2, so the linter must be v2.x —
+      # and a v2 linter requires action v7 or newer. Action v6 rejects the
+      # version string outright: "golangci-lint v2 is not supported by
+      # golangci-lint-action v6". Pinned to the linter version the lint traps in
       # docs/superpowers/plans/2026-07-28-go-encoder-and-schema.md were verified
       # against.
       - name: Lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
           version: v2.12.2
 
