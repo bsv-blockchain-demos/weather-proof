@@ -108,7 +108,7 @@ D=50 costs marginally more per claim and **less in total**, because it needs few
 Replace the TypeScript weather-proof backend with a single Go binary that:
 
 1. Polls the Tempest weather API on a fixed interval and durably queues one record per station per poll.
-2. Encodes each record into an `OP_FALSE OP_RETURN` locking script that is **byte-identical** to the TypeScript encoder's output, and anchors batches of them on BSV mainnet.
+2. Encodes each record into a **valid, deterministic** `OP_FALSE OP_RETURN` locking script in a fixed documented field order, **hard-capped at 297 bytes** (§7.6) and readable by its own decoder, and anchors batches of them on BSV mainnet. The format is **internal to this backend** — byte-parity with the historical TypeScript encoder is **not** a requirement (§7).
 3. Serves the **five HTTP endpoints, one SSE stream and two probe endpoints** that the redesigned React SPA and kubelet actually need (§13), plus `GET /api/proof/{txid}`.
 4. Replaces ~470 lines of hand-rolled hash-puzzle funding machinery with the go-wallet-toolbox **client-side FuelKeeper** plus server-side throughput funding — so no application code ever names a funding basket, builds a funding script, or selects a UTXO.
 5. **Does not regress any security control the TypeScript has at `5cfea93`** — rate limiting, SSRF defence, injection/input-validation defence, workflow permissions (§6, a first-class hard requirement).
@@ -120,7 +120,8 @@ Replace the TypeScript weather-proof backend with a single Go binary that:
 |---|---|
 | Redesigning the frontend | The redesign (`698c944`, `8602cd1`) is **kept**. Frontend changes in scope are limited to the five surgical fixes of §13.9 — a Docker build-arg, a `.dockerignore`, replacing a dead nginx config, deleting three dead components, and a one-line BEEF-resolution fix. |
 | Making the landing page's numbers real | `/` renders entirely hardcoded fiction (`'19+'`, `'50,000+'`, `'1M+'`, a fake txid and block height) and makes **zero** backend calls. Wiring it to live data is **new product work**, not a port. Recorded as a follow-up. |
-| Backfilling the existing MongoDB records | Explicitly abandoned (§14). |
+| Backfilling the existing MongoDB records | **Impossible, not merely declined.** The Atlas cluster is gone and it held the only copy of the txids (§14.1). |
+| **Byte-parity with the historical TypeScript encoder** | **Released — and released permanently, not deferred.** The on-chain encoding is consumed by nothing outside this backend: the frontend's `verify.ts` is the only file in `frontend/src/` importing `@bsv/sdk`, and it parses BEEF and checks a merkle proof without ever reading the `OP_RETURN` payload (§7, §12.4). The requirement is a valid, deterministic, capped, round-trippable script — not a specific historical byte string. **Do not reinstate a TypeScript oracle, a pinned `@bsv/sdk`, a `parity/ts/` tree or a `make parity` target;** every one of those existed only to serve a constraint that no longer exists (§7.0). |
 | A sweep tool for the legacy hash-puzzle UTXOs | Not currently possible — the old storage server's auth endpoint returns HTTP 500 (§14.3). Deferred, non-blocking. |
 | Client-side verification that the on-chain script matches the displayed JSON | Requires meaningful frontend work. Recorded as a known weakness (§12.4). |
 | Porting `src/notification/*` (Twilio) | Never instantiated. Replaced by structured logs + external alerts — **conditional on §11.3 shipping in the same PR** (§5 row 11). |
@@ -139,7 +140,7 @@ Replace the TypeScript weather-proof backend with a single Go binary that:
 | Area | Files | Behaviour at HEAD |
 |---|---|---|
 | Config | `src/config/env.ts` | 14 env vars + a `validateConfig()` that throws. **A committed mainnet-capable default private key.** `src/service/wallet.ts:4-6` **re-reads `SERVER_PRIVATE_KEY`, `WALLET_STORAGE_URL` and `BSV_NETWORK` straight from `process.env` with its own duplicated defaults**, bypassing `config` and `validateConfig` — two sources of truth for the three most important variables. |
-| Encoding | `src/format/{types,constants,schema,encoder,decoder}.ts`, `src/utils/float-encoder.ts` | 33 fields, alphabetical order, `OP_FALSE OP_RETURN OP_1` prefix, `@bsv/sdk` `Script.writeBn`/`writeBin` semantics, floats scaled ×1e6 through `Math.round`. **Byte-identical across all 10 recent commits** — `git log 60153c8..5cfea93 -- src/format src/utils` is empty and the diffstat for those paths is empty. |
+| Encoding | `src/format/{types,constants,schema,encoder,decoder}.ts`, `src/utils/float-encoder.ts` | 33 fields, alphabetical order, `OP_FALSE OP_RETURN OP_1` prefix, `@bsv/sdk` `Script.writeBn`/`writeBin` semantics, floats scaled ×1e6 through `Math.round`. **Byte-identical across all 10 recent commits** — `git log 60153c8..5cfea93 -- src/format src/utils` is empty and the diffstat for those paths is empty. *(The Go port keeps the **33-field list and its alphabetical order** from `schema.ts` and keeps minimal push encoding; it does **not** keep the JavaScript numeric semantics, because it does not have to match these bytes — §7.0.)* |
 | Ingestion | `src/service/tempest.ts`, `src/service/queue.ts` | `getStations()` (1 h in-process cache) + **serial** per-station `better_forecast` with `AbortSignal.timeout(15 s)`; `setInterval(POLL_RATE=300 s)`; insert `status:'pending'`. |
 | Publishing | `src/service/processor.ts`, `src/service/transaction.ts` | `setInterval(3 s)`; **`find({status:'pending'}).limit(100)` then a separate `bulkWrite` setting `processing`** — a non-atomic claim (§5.0). Spends hash-puzzle funding UTXOs with a `'20'+preimage` unlocking script. `acceptDelayedBroadcast: false`. Assumes `outputIndexes = [0..N-1]`. Failures return the whole batch to `pending` **forever**. |
 | Funding | `src/service/setup.ts`, `src/service/monitor.ts`, `src/scripts/hash-puzzle.ts`, `src/scripts/setup-funding.ts` | Pre-mints 1 000 hash-puzzle UTXOs of 1 000 sat into a `funding` basket; a 60 s monitor tops it up. Each output has its **own random preimage**, stored only in the old storage server's `customInstructions`. |
@@ -151,7 +152,7 @@ Replace the TypeScript weather-proof backend with a single Go binary that:
 
 **Repo-state caveats that matter to the port:**
 
-- **No lockfile is committed anywhere.** `.gitignore:3` ignores `package-lock.json` (and `yarn.lock`); `git ls-files | grep -i lock` returns nothing. Both Dockerfiles run `npm install`, not `npm ci`. `@bsv/sdk` is declared `^1.7.0` and currently resolves to **1.10.3**; `@bsv/wallet-toolbox-client` is `^1.0.0` resolving to 1.7.19. **The encoder byte-parity oracle therefore hangs off a floating dependency** (§7.4).
+- **No lockfile is committed anywhere.** `.gitignore:3` ignores `package-lock.json` (and `yarn.lock`); `git ls-files | grep -i lock` returns nothing. Both Dockerfiles run `npm install`, not `npm ci`. `@bsv/sdk` is declared `^1.7.0` and currently resolves to **1.10.3**; `@bsv/wallet-toolbox-client` is `^1.0.0` resolving to 1.7.19. This is a **supply-chain** defect and is fixed for the surviving JavaScript — `frontend/package-lock.json` is created, un-ignored and committed, and `frontend/Dockerfile` switches to `npm ci` (§6.6). *(An earlier draft called this out because the encoder's byte-parity oracle hung off the floating `@bsv/sdk`. That oracle is deleted — §7.0 — so the floating dependency is now only a supply-chain concern, and only for the frontend.)*
 - `ENCODING.md`'s "Field Order" section **contradicts** `src/format/schema.ts`. The schema is alphabetical. **Port from the code, never from that doc** (corrected as a deliverable, §19).
 - README's "111 tests, 98 % statement coverage" is stale: `coverage/` covers only `src/format/*`, `src/utils/float-encoder.ts` and `src/index.ts`. **Service-layer coverage is zero.**
 - `frontend/README.md:157` claims the Dockerfile "builds and serves via nginx". **It does not** (§15.1) — that sentence is what produced a phantom port mismatch in earlier research.
@@ -340,13 +341,13 @@ Module path: **`github.com/bsv-blockchain-demos/weather-proof`**, `go 1.26.3` (m
 | `internal/config/validate.go` | Aggregating `Validate(subcommand)` that collects **all** errors and **never echoes a value**. Imports `internal/fuelmath` **only** — never `internal/fuel`, which would close the cycle `config → fuel → config`. | `validateConfig()` |
 | `internal/weather/types.go` | `WeatherData` with 33 snake_case json tags declared **alphabetically**; `FieldType`; `FieldDefinition`; `Version=1`, `FloatScale=1e6`, `FloatEpsilon=1e-6`, `DataFieldsPerRecord=33`. | `src/format/types.ts` + `constants.ts` |
 | `internal/weather/schema.go` | `FieldSchema`: the 33-entry ordered slice, `air_density` → `wind_gust`. **Order is the wire format.** Ported from `schema.ts`, never from `ENCODING.md`. | `src/format/schema.ts` |
-| `internal/weather/scriptnum.go` | `appendScriptNum` reproducing `@bsv/sdk` `Script.writeBn` exactly; FMA-safe `jsRound`. | `@bsv/sdk` internals + `float-encoder.ts` |
+| `internal/weather/scriptnum.go` | `appendScriptNum(s *script.Script, n int64) error`: the **minimal-push** opcode branches (`OP_0`, `OP_1NEGATE`, `OP_1`..`OP_16`) plus `interpreter.ScriptNumber.Bytes()` for the magnitude, appended with `script.AppendPushData` (§7.2). Minimal push is kept because **script validity** requires it, not because anything else emits these bytes. | `float-encoder.ts` (number half) |
 | `internal/weather/float.go` | `EncodeFloat`, `DecodeFloat`, `ValidateFloatPrecision`. | `src/utils/float-encoder.ts` |
 | `internal/weather/encoder.go` | `Encode(WeatherData) (*script.Script, error)`, `EncodeHex`. Typed errors (§7.5). Pure, no I/O. | `src/format/encoder.ts` |
-| `internal/weather/decoder.go` | `Decode`, `DecodeHex`, `IsValidScript`; tolerates the legacy prefix-less layout. | `src/format/decoder.ts` + the read half of `locking-scripts.ts` |
-| `internal/weather/testdata/vectors.json` | The frozen parity contract (§7.4). | **new** |
+| `internal/weather/decoder.go` | `Decode`, `DecodeHex`, `IsValidScript`. **Exactly ONE layout — the one `encoder.go` writes** (36 chunks, §7.7). No historical-layout tolerance: *the prefix-less legacy fallback and the pre-`e2ae463` field order were removed because the only records in those layouts are unlocatable (§14.1) and nothing else produces them.* | `src/format/decoder.ts` + the read half of `locking-scripts.ts` |
+| `internal/weather/testdata/golden/*.json` | The **self-generated** golden files (§7.4) — the encoder's own frozen output, regenerated by `go test ./internal/weather -run TestGolden -update`. *Replaces the deleted `vectors.json`, which was generated from TypeScript.* | **new** |
 | `internal/tempest/client.go` | `Stations(ctx)`, `CurrentConditions(ctx,id)`; ctx timeouts, retry+backoff, 1 h station cache, **bounded concurrency** (TS is serial), hardened outbound client. | `src/service/tempest.ts` |
-| `internal/tempest/mapper.go` | Response → `WeatherData`. Reproduces JS coercion exactly: **truncation** (not rounding) for integer fields, `parseFloat` for the 2 floats, `''`/`false`/`0` fallbacks for **absent** fields — and **rejects the reading** when a field is present but unparseable (§7.5). | `mapToWeatherData` |
+| `internal/tempest/mapper.go` | Response → `WeatherData`. **Sane Go semantics, documented in the file header** (§7.5): a JSON number destined for an integer field is accepted only if integral (a fractional value is a *rejected reading*, not a silently truncated one — the deliberate change from JS `parseInt` truncation, which was only ever mimicked for parity); `''`/`false`/`0` fallbacks for **absent** fields; **reject the whole reading** when a field is present but unparseable. | `mapToWeatherData` |
 | `internal/store/store.go` | The persistence seam. `Record`, `Station`, `Stats`, `Status` (exactly the 4 wire literals), and four interfaces (§4.3). Everything above these is datastore-agnostic. | `src/db/models/*` (interfaces extracted) |
 | `internal/store/postgres/*.go` | pgx/v5 implementation: `records.go`, `claim.go`, `stations.go`, `stats.go`, `deposits.go`, `preflight.go`, `migrations.sql`. All queries **parameterised**; `QueryExecModeSimpleProtocol` is forbidden. | `src/db/connection.ts` + the query halves of the route files |
 | `internal/walletconn/walletconn.go` | Build the storage-server wallet: pooled hardened transport, retry-with-backoff around a `Balance()` probe. | `src/service/wallet.ts` (lazy singleton → injected dependency) |
@@ -373,7 +374,7 @@ Module path: **`github.com/bsv-blockchain-demos/weather-proof`**, `go 1.26.3` (m
 | `internal/proof/proof.go` + `cache.go` | Store-gated BEEF lookup: 64-hex validation → **store existence check** → `services.GetBEEF` → `beef.AtomicBytes(txidHash)`. Bounded LRU, TTLs, `singleflight`, per-IP limit, WoC 429 backoff. | `src/api/routes/proof.ts` |
 | `internal/obs/sampler.go` | The 60 s heartbeat line and the `/api/ops` snapshot. | replaces `src/notification/*` + the 60 s `console.log` in `app.ts:89-99` |
 | `internal/ratelimit/` | Bounded-key sliding-window limiter + client-IP extraction with a trusted-CIDR allowlist (§6.1). | **new** |
-| `.golangci.json`, `Makefile`, `Dockerfile`, `docker-compose.yaml`, `.github/workflows/{build,go}.yml`, `frontend/.dockerignore`, `frontend/nginx.conf` (static-only rewrite) | Toolbox `.golangci.json` verbatim with the `gci` prefix changed; two-stage `golang:1.26-alpine` → `gcr.io/distroless/static-debian12`, `CGO_ENABLED=0`, `USER 65532`, `EXPOSE 3001`; compose swaps mongo for `postgres:17-alpine` and **drops the `setup` profile**; Makefile loses `mongo-shell` and gains `build test parity lint up down migrate`. | `Dockerfile`, `docker-compose.yaml`, `Makefile`, `jest.config.js` |
+| `.golangci.json`, `Makefile`, `Dockerfile`, `docker-compose.yaml`, `.github/workflows/{build,go}.yml`, `frontend/.dockerignore`, `frontend/nginx.conf` (static-only rewrite) | Toolbox `.golangci.json` verbatim with the `gci` prefix changed; two-stage `golang:1.26-alpine` → `gcr.io/distroless/static-debian12`, `CGO_ENABLED=0`, `USER 65532`, `EXPOSE 3001`; compose swaps mongo for `postgres:17-alpine` and **drops the `setup` profile**; Makefile loses `mongo-shell` and gains `build test lint up down migrate` — *no `parity` / `parity-regen` targets: they invoked a TypeScript oracle that no longer exists (§7.0). Golden files are regenerated by `go test … -update`, never by make.* | `Dockerfile`, `docker-compose.yaml`, `Makefile`, `jest.config.js` |
 
 ### 4.2 `migrations.sql` (run at startup, idempotent)
 
@@ -528,17 +529,18 @@ There is **no `StampRef`**: the claim `UPDATE … RETURNING` stamps `claim_ref` 
 | 14 | Both committed private keys, in all six locations | 6 | `src/config/env.ts:11`, `src/service/wallet.ts:4`, `.env.example:2`, `QUICKSTART.md:41`, `docker-compose.yaml:39` and `:97` (key A); `.env.docker:6` (key B, mainnet). `validateConfig` does **not** check the key, so a missing env var silently runs on a publicly known key. | **Subsumed.** The Go config has **no default key** and fails closed. Both keys are **compromised**; neither may be reused. `.dockerignore` gains `.env*` wholesale and nothing `COPY`s an `.env*` into any image (§6.6). |
 | 15 | The unbounded, untracked retry semantics | — | On any transaction failure the whole batch is `bulkWrite`n back to `pending` with the error string stored, and the next 3 s tick re-selects the same rows (`createdAt` ASC, limit 100) **forever**. No attempts counter, no backoff, no dead-letter, no jitter. **`'failed'` is never written by any code path** (grep: only `weather-record.ts:7,45`, `weather.ts:25`, `queue.ts:170` reference it), so the frontend's Failed filter can never match. **A permanently poisonous record sits at the head of the queue and blocks every subsequent record indefinitely.** If the rollback itself fails, rows stay `processing` and are rescued only by `recoverStuckRecords()` at the next startup. | **NOT subsumed — must be reimplemented.** An `attempts` counter, error classification where **only permanent errors consume the budget** (§10.3), terminal `failed` at 3 attempts, a circuit breaker, poison-record isolation (§10.7), a lease reaper, and `weather requeue` (§10.5). **`failed` finally becomes reachable**, which makes the frontend's existing Failed filter meaningful. |
 | 16 | `MONGO_URI`, the mongoose `__v` field | — | `MONGO_URI` is required by `validateConfig`. **No unique index exists anywhere in the Mongo schema**, so nothing prevents duplicate `(stationId, timestamp)` rows today. | **Subsumed and improved.** `POSTGRES_*` replaces it; `UNIQUE (station_id, observation_time)` prevents the duplicates Mongo allowed (§10.8). |
-| 17 | The mongoose transaction in `POST /api/verify` (`verify.ts:84-101`) | ~18 | `mongoose.startSession()` + `session.withTransaction(...)` on the `blockHeight` write. **MongoDB transactions require a replica set or mongos**; docker-compose runs a single `mongo:8.0` with no `--replSet` and no keyfile, so this path throws `IllegalOperation` and the route returns **500** — meaning `blockHeight` is never persisted in that deployment shape and `useAutoVerify` silently fails on every page. | **Subsumed and an improvement.** Postgres has real transactions. Two consequences: (a) **do not assume any existing `blockHeight` data is present in any Mongo dump**; (b) record this as an improvement, not a parity risk. |
+| 17 | The mongoose transaction in `POST /api/verify` (`verify.ts:84-101`) | ~18 | `mongoose.startSession()` + `session.withTransaction(...)` on the `blockHeight` write. **MongoDB transactions require a replica set or mongos**; docker-compose runs a single `mongo:8.0` with no `--replSet` and no keyfile, so this path throws `IllegalOperation` and the route returns **500** — meaning `blockHeight` is never persisted in that deployment shape and `useAutoVerify` silently fails on every page. | **Subsumed and an improvement.** Postgres has real transactions. Two consequences: (a) **do not assume any existing `blockHeight` data exists anywhere** — and note that no Mongo dump can be taken either, because the cluster is gone (§14.1); (b) record this as an improvement, not a regression. |
 | 18 | The `GET /api/stations?search=0` 500 (`stations.ts:29-50`) | — | The filter branch does `const asNum = parseInt(search,10); if (!isNaN(asNum)) filter.stationId = asNum; else filter.$text = {$search: search}`, but the **sort** branch is chosen independently with `search && !parseInt(search,10) ? {score:{$meta:'textScore'}} : {stationId:1}`. For `search='0'`, `parseInt` is `0` which is **falsy**, so the sort takes the textScore branch while the filter has no `$text` clause — Mongo rejects a `$meta:'textScore'` sort without a text query. Any string parsing to numeric zero (`'0'`, `'00'`, `'0abc'`) reproduces it. | **Not ported.** The Go handler derives filter **and** sort from **one** parsed value (§13.3). |
-| 19 | All of `tests/` (7 jest files) and `jest.config.js`; everything under `src/` **except** the files retained by row 20 | — | The service-layer suite tests code that no longer exists (its coverage was zero anyway); the format suite is superseded by the golden vectors of §7.4, which are generated from the retained TS, not from jest. | **Subsumed.** |
-| 20 | **RETAINED, frozen — not deleted** | — | — | `git mv` (never delete) into **`parity/ts/`**: `src/format/{types,constants,schema,encoder,decoder}.ts`, `src/utils/float-encoder.ts`, the tests covering them, `tsconfig.json`, `jest.config.js`. Plus a **new** `parity/ts/package.json` containing only what the encoder needs, with **`@bsv/sdk` pinned to the exact version `1.10.3` (no caret)**, and a **committed `parity/ts/package-lock.json`** — which requires un-ignoring it in `.gitignore`. Keep `ENCODING.md` and `SPEC.md`: they are the human-readable half of the oracle. Nothing in the running system imports any of it; it is excluded from the Docker build and from Go CI lint. **Deleting it would make the golden vectors unregenerable and break the contract §7 calls the highest-risk part of the port.** Do the `git mv` as a **separate commit** from the deletions so `git log --follow` keeps the encoder's provenance. |
+| 19 | All of `tests/` (7 jest files) and `jest.config.js`; everything under `src/` **except** the files retained by row 20 | — | The service-layer suite tests code that no longer exists (its coverage was zero anyway); the format suite tests the TypeScript encoder, which the Go encoder no longer has to agree with (§7.0). The Go encoder's own coverage is §17.2 tests 1–5. | **Subsumed.** |
+| 20 | **RETAINED IN PLACE — not relocated, not pinned, not deleted by this port** | — | — | `src/format/{types,constants,schema,encoder,decoder}.ts` and `src/utils/float-encoder.ts` **stay exactly where they are.** They are the human-readable authority for the **33-field list and its order**, which the Go port keeps unchanged (§7.1), and `git log --follow` provenance for it. Nothing in the running system imports them; they are excluded from the Docker build and from Go CI lint. Deleting them is a **later, separate, non-blocking cleanup** once §7.4's golden files are committed — no Go test or build step depends on them at any point. **REMOVED from this row and deliberately not reinstated:** the `git mv` into `parity/ts/`, the cut-down `parity/ts/package.json`, the exact `@bsv/sdk` `1.10.3` pin and the committed `parity/ts/package-lock.json`. All four existed **only** to keep a byte-parity oracle regenerable; with parity released (§7.0) they are pure maintenance burden, and a pinned oracle nothing consults is worse than none — it invites someone to "restore the contract" later. |
 
 ### 5.2 Rows an earlier draft contained that are deleted outright
 
 | Earlier claim | Why it is deleted |
 |---|---|
-| "Delete `src/scripts/prove-data-lock.ts` (38 lines, breaks `npm run build`)" | **The file does not exist at `HEAD`.** `git ls-tree HEAD src/scripts/` returns exactly three blobs: `hash-puzzle.ts`, `locking-scripts.ts`, `setup-funding.ts`; the file appears only in a dropped local commit and a stash. `npx tsc --noEmit` at `HEAD` exits **0**. The parity-generation caveat about excluding it, and the Makefile hack, go with it. The carried-forward `docs/specs/prove-data-lock.md` is **also dropped** — it has no source in the tree being ported. |
-| "`package-lock.json` survives, moved to `parity/ts/`" | **It does not exist in the repo and is gitignored.** It must be *created* and *un-ignored* (row 20). |
+| "Delete `src/scripts/prove-data-lock.ts` (38 lines, breaks `npm run build`)" | **The file does not exist at `HEAD`.** `git ls-tree HEAD src/scripts/` returns exactly three blobs: `hash-puzzle.ts`, `locking-scripts.ts`, `setup-funding.ts`; the file appears only in a dropped local commit and a stash. `npx tsc --noEmit` at `HEAD` exits **0**. The parity-generation caveat about excluding it, and the Makefile hack, go with it — and with the whole parity-generation step (§7.0). The carried-forward `docs/specs/prove-data-lock.md` is **also dropped** — it has no source in the tree being ported. |
+| "`package-lock.json` survives, moved to `parity/ts/`" | **Doubly wrong now.** It does not exist in the repo and is gitignored; and **there is no `parity/ts/` at all** — the byte-parity oracle is deleted (§7.0, row 20). The only lockfile this port creates and un-ignores is **`frontend/package-lock.json`**, for supply-chain reasons (§6.6). |
+| "The TS encoder must be retained as a pinned golden oracle, and the vectors generated from it before any deletion" | **The constraint it served is gone.** Nothing outside this backend decodes the weather script — `frontend/src/services/verify.ts` is the only `@bsv/sdk` importer in the SPA and it never reads the `OP_RETURN` payload (§7.0, §12.4). The goldens are now self-generated from the Go encoder (§7.4), so no ordering dependency exists between the Go work and any TypeScript change. |
 | "`FOR UPDATE SKIP LOCKED` structurally removes races upstream still has" | Overstated in one direction and understated in another. Upstream **still has** the non-atomic claim; what upstream added (`11ecfd5`) is a retry that **masks its symptom**. And the Go claim is not an improvement over a broken guard — it is the **replacement for an accidental one** (§5.0). |
 | "the funding machinery is deleted because the keeper/server does this now" | True of the **mechanics**, false of the **guarantees**. Rows 1, 4, 5, 9, 11 and 15 state the behaviour the port must reimplement. |
 
@@ -746,7 +748,7 @@ The four places the port will be tempted to build SQL dynamically:
 | `SERVER_PRIVATE_KEY` | Defaults to a literal hex key compiled into the app; `validateConfig` does not check it; the same key is in five other files; `src/service/wallet.ts:4` re-reads it from `process.env` with its own duplicate default | **No default.** `Validate()` returns a startup error listing every missing secret so the pod `CrashLoopBackOff`s rather than running on a publicly known key. `config.Secret` type (§12.5). Continue pulling from SSM `/apps/weather-chain/SERVER_PRIVATE_KEY` |
 | `POSTGRES_PASSWORD` | n/a | **No default**; SSM (§0 P3); redacted in logs |
 | `.env*` in images | `Dockerfile:45` does `COPY .env.example ./.env.example`; `.dockerignore` excludes `.env` but not `.env.example`, so the published back image **ships a private key** | **`COPY` no `.env*` file.** `.dockerignore` covers `.env*` wholesale. **And there is no `frontend/.dockerignore` at all** — Docker resolves `.dockerignore` relative to the build context, and the frontend context is `./frontend` (`docker-compose.yaml:72`, `build.yml:59`), so the repo-root file does not apply. `docker build ./frontend` currently copies `frontend/.env` (which contains `VITE_API_URL=http://localhost:3001`), the host's darwin/arm64 `node_modules` **after** `npm install` (clobbering the container install), and a stale February `dist`. **Concrete proof the leak is real:** the stale prebuilt `frontend/dist/assets/index-DfIBVyIr.js` in the working tree contains the literal `http://localhost:3001` (1 occurrence). CI escapes it only because a fresh checkout has none of those files. **Add `frontend/.dockerignore` with `node_modules/`, `dist/`, `.env*`, `.DS_Store`** |
-| Dependency pinning | **No lockfile committed anywhere**; all deps are caret ranges; both Dockerfiles use `npm install` | `go.mod` **and** `go.sum` committed; `GOFLAGS=-mod=readonly`; `go mod download` against the committed `go.sum` in the builder stage; `go mod verify` and a CI check that `go mod tidy` produces no diff; the `toolchain` directive pinned; the builder base image pinned **by digest**. Never bypass `sum.golang.org`. **And fix the JS side in the same PR:** un-ignore `package-lock.json`, commit `frontend/package-lock.json` and `parity/ts/package-lock.json`, switch both Dockerfiles to `npm ci`, pin `@bsv/sdk` to an exact version (§7.4) |
+| Dependency pinning | **No lockfile committed anywhere**; all deps are caret ranges; both Dockerfiles use `npm install` | `go.mod` **and** `go.sum` committed; `GOFLAGS=-mod=readonly`; `go mod download` against the committed `go.sum` in the builder stage; `go mod verify` and a CI check that `go mod tidy` produces no diff; the `toolchain` directive pinned; the builder base image pinned **by digest**. Never bypass `sum.golang.org`. **And fix the surviving JS in the same PR:** un-ignore and commit **`frontend/package-lock.json`**, and switch `frontend/Dockerfile` to `npm ci`. Pinning the frontend's `@bsv/sdk` to an exact version stays worthwhile **for supply-chain reasons** — it is live code on the verification path (`verify.ts`) — but it is **no longer an encoder requirement**: there is no `parity/ts/` lockfile and no version-pinned oracle (§7.0) |
 | Error leakage | Route handlers are clean (generic messages, detail logged server-side; `proof.ts:41-45` even reclassifies an upstream "not found" into a 404) but the **global handler at `src/api/index.ts:57-63` returns `{error:'Internal server error', message: err.message}`** — echoing raw error text, which for a Mongo/driver/wallet error can disclose connection strings, hostnames, collection names or file paths | A recover-and-respond middleware that logs the error + stack with `slog` at error level **including a correlation id**, and returns only `{"error":"internal server error","request_id":"…"}`. **Never `fmt` the err into the body.** For pgx: never return `err.Error()` on a `*pgconn.PgError` (it contains SQL text, column and constraint names). Classify: `pgx.ErrNoRows`→404, `23505`→409, `22P02`→400, else 500 opaque. **Keep** the good "not mined yet"→404 reclassification, since the frontend depends on it |
 | Container hardening | Backend is good: multi-stage, `dumb-init` as ENTRYPOINT, explicit non-root user 1001. **Frontend runs `serve` as ROOT with no `USER` directive** (`frontend/Dockerfile:22-31`) | Backend: `gcr.io/distroless/static-debian12` final stage, `CGO_ENABLED=0`, static binary, `USER 65532:65532`, `EXPOSE 3001` (the port it actually binds). No `dumb-init` needed — a Go binary is a well-behaved PID 1 provided it installs `signal.NotifyContext` for SIGTERM/SIGINT (mirroring `src/app.ts:166-174`). Frontend: `nginxinc/nginx-unprivileged`, non-root (§15.5). Manifest `securityContext`: `runAsNonRoot: true`, `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true`, `capabilities.drop: [ALL]`, `seccompProfile: RuntimeDefault`, **plus resource limits** (currently absent everywhere, and `DOCKER.md` already flags it) |
 | Security headers | **None** — no helmet, no CSP, no HSTS | Add `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` on API responses. A CSP belongs on the **frontend** nginx; note `frontend/index.html` loads DM Sans + Outfit from `fonts.googleapis.com`/`fonts.gstatic.com`, so a strict CSP needs those hosts or self-hosted fonts |
@@ -783,11 +785,34 @@ Because `WriteTimeout` must be 0 for the never-ending SSE response, **every non-
 
 ---
 
-## 7. Encoder byte-parity strategy
+## 7. Encoder specification — a deterministic INTERNAL format
 
-The encoder is the one part of this port where a subtle mistake writes **wrong bytes to mainnet forever** and no round-trip test catches it (a symmetric encoder+decoder error round-trips perfectly). Treat it as a frozen contract.
+### 7.0 Why this is not a byte-parity problem
 
-**Good news, verified:** `src/format/*` and `src/utils/float-encoder.ts` are **byte-identical across all 10 recent commits** — `git log 60153c8..5cfea93 -- src/format src/utils` returns zero commits and the diffstat for those paths is empty. The redesign touched `frontend/`, `src/api/`, `src/service/`, `src/db/` — not the encoder. Prior measurements stand and were independently re-confirmed by running the real encoder at `HEAD`.
+**The weather script encoding is consumed by nothing outside this backend.** That is the fact the whole of §7 now rests on, and it is verified, not assumed:
+
+| Evidence | Verification |
+|---|---|
+| **The SPA's only BSV consumer never reads the payload** | `grep -rln '@bsv/sdk' frontend/src/` returns **exactly one file**: `frontend/src/services/verify.ts`. That file does exactly three things — `Transaction.fromHexBEEF(beefHex)`, assert `tx.merklePath` is present, and `await tx.verify(chainTracker)` against a `WhatsOnChain` tracker. It **never** calls a decoder, never inspects `tx.outputs`, never touches an `OP_RETURN` chunk. |
+| **Weather values reach the UI as JSON, not as script** | Every rendered field comes from the API's `data` object (§13.2, §13.5). The script is never parsed client-side — which §12.4 already records as a known weakness of the *verification story*, and which here is what makes the encoding internal. |
+| **The backend is the only decoder** | `internal/weather/decoder.go` exists solely so the app can read back what it wrote (`GET /api/proof`, reconciliation, the §14.4 chain-rebuild procedure). It reads **one** layout: the one `encoder.go` writes. |
+
+So the encoder has **no external contract to match.** Its requirements are:
+
+| # | Requirement | Enforced by |
+|---|---|---|
+| a | **A valid script**: `OP_FALSE OP_RETURN`, a version byte, then the 33 fields. **Minimal push-data encoding** — kept because script validity requires it, not for parity (§7.2) | §17.2 test 1 |
+| b | **A fixed, documented field order** — the existing alphabetical 33-field schema, unchanged. The wire format is **not** redesigned; that option was considered and declined (§7.1) | §17.2 test 1 |
+| c | **A hard 297-byte cap.** This is money, not style: 297 B is the top of the contiguous one-claim fuel window at D=50, so one byte more silently costs a **second fuel claim per record** (§7.6, §8.3) | §17.2 test 3 |
+| d | **Encoder/decoder round-trip**, because the app's own proof and verification paths read the script back (§7.7) | §17.2 test 4 |
+| e | **Determinism** — identical input, identical bytes, always. No map iteration in the encode path, no wall clock, no randomness (§7.4) | §17.2 tests 1, 2 |
+| f | **Self-generated golden files**, so an accidental change to field order or number encoding fails loudly instead of quietly writing a different record shape (§7.4) | §17.1 |
+
+**Byte-parity with the historical TypeScript encoder is NOT a requirement.** Stated flatly so that nobody reinstates the machinery: there is no correct historical byte string to match, because the only consumer that could have cared does not read the bytes. A symmetric encoder+decoder change is *harmless* here — it produces a different-but-self-consistent record — which is precisely why §7.4's goldens are a **change detector**, not a correctness oracle.
+
+**What was dropped, and why — the audit trail.** An earlier draft of this section treated byte-exactness with the TypeScript at `5cfea93` as the highest-risk part of the port, and built five mechanisms to guarantee and prove it: (1) `@bsv/sdk` pinned to exactly `1.10.3` with a committed lockfile as a golden oracle; (2) the TS encoder `git mv`d into a frozen `parity/ts/` tree so the vectors stayed regenerable; (3) `internal/weather/testdata/vectors.json` **generated from that TypeScript**, with `make parity` / `make parity-regen` targets, an `oracleDigest` anchor and a CI `git diff --exit-code` job; (4) a hand-rolled `appendScriptNum` reproducing `@bsv/sdk`'s `Script.writeBn` bit-for-bit and an FMA-safe `jsRound` emulating ECMAScript's half-up-toward-+∞ rounding; (5) decoder support for **three** historical on-chain layouts, including a `FieldSchemaV0` transcription of the pre-`e2ae463` time-first field order, plus a human-gated task to pull a real on-chain script off WhatsOnChain as a fixture. **All five are removed.** Two facts killed them. First, the frontend evidence above: nothing outside this backend ever decoded the script, so parity bought nothing. Second, the historical records are **unlocatable** — the MongoDB Atlas cluster that held their txids no longer resolves (§14.1), so there is no set of old records for a multi-layout decoder to read and no on-chain fixture to fetch. Retaining a version-pinned oracle that nothing consults would have been worse than deleting it: it reads as an obligation and invites a future engineer to "restore the contract" and re-inherit JavaScript's numeric semantics for no reason.
+
+**What the freedom is spent on:** `go-sdk`'s own helpers instead of JavaScript emulation (§7.2), and Go's own rounding with the rule written down (§7.3).
 
 ### 7.1 The format
 
@@ -797,88 +822,136 @@ version                       51             (OP_1 — an OPCODE, not a data pus
 33 fields in FieldSchema order (alphabetical, air_density -> wind_gust)
 ```
 
-Measured against the repo's own `tests/fixtures/weather-samples.ts` `sampleWeatherData`: script = **99 bytes**, hex begins `006a510310af13018903d7090105436c65617252…`. Serialised output = 8 (value) + 1 (varint scriptlen) + 99 = **108 bytes**. All weather outputs carry `satoshis: 0` and no basket, and the `OP_FALSE OP_RETURN` prefix makes them provably unspendable, so they add no UTXO to any basket.
+**The 33-field schema and its alphabetical order are KEPT, unchanged.** Redesigning the wire format was considered and **declined** — the field list is verified against `src/format/schema.ts`, it works, and a redesign would spend risk for nothing. `FieldSchema` is a 33-entry **ordered slice** in `internal/weather/schema.go`; **order is the wire format**, and it is ported from `schema.ts`, never from `ENCODING.md` (whose Field Order section is factually wrong — §19).
 
-Per field type:
+Measured against the repo's own `tests/fixtures/weather-samples.ts` `sampleWeatherData`: script = **99 bytes**. Serialised output = 8 (value) + 1 (varint scriptlen) + 99 = **108 bytes**. All weather outputs carry `satoshis: 0` and no basket, and the `OP_FALSE OP_RETURN` prefix makes them provably unspendable, so they add no UTXO to any basket. *(Sizes are a property of the field schema and of minimal push encoding, so they carry over unchanged; the specific historical hex string is **not** a normative target — §7.4's Go-generated goldens are the record of what this app writes.)*
+
+Per field type. `appendScriptNum` is §7.2; `AppendPushData` is `go-sdk`'s own — signature and behaviour verified at `github.com/bsv-blockchain/go-sdk v1.3.2`:
 
 | Type | Emission |
 |---|---|
-| `integer` | `writeNumber(int64)` |
-| `float` | `writeNumber(jsRound(float64(v) * 1e6))` |
-| `string` | `writeBin([]byte(s))` — `OP_0` (`0x00`) for empty; a 1-byte length opcode `0x01..0x4b` for 1..75 bytes; `OP_PUSHDATA1 (0x4c) <len:1>` for 76..255; `OP_PUSHDATA2 (0x4d) <len:2 LE>` for 256..65535, matching `@bsv/sdk` `Script.writeBin`. Above 65535 bytes return `ErrStringTooLong` rather than emitting `OP_PUSHDATA4` |
-| `boolean` | `writeNumber(0)` / `writeNumber(1)` → `OP_0` / `OP_1` |
+| `integer` | `appendScriptNum(s, int64(v))` |
+| `float` | `appendScriptNum(s, scaleFloat(v))` — ×1e6 then rounded per §7.3 |
+| `string` | `s.AppendPushData([]byte(str))` — **`go-sdk`'s `PushDataPrefix` already emits exactly the minimal form** (verified empirically at v1.3.2): `0x00` for empty, a 1-byte length opcode `0x01..0x4b` for 1..75 bytes, `OP_PUSHDATA1 (0x4c) <len:1>` for 76..255, `OP_PUSHDATA2 (0x4d) <len:2 LE>` for 256..65535. Above 65535 it emits `OP_PUSHDATA4`, so **our** code returns `ErrStringTooLong` before calling it — a cheap defensive guard that the 297-byte cap (§7.6) makes unreachable in practice |
+| `boolean` | `appendScriptNum(s, 0)` / `appendScriptNum(s, 1)` → `OP_0` / `OP_1` |
 
-### 7.2 `writeNumber` — reproduce `@bsv/sdk` `Script.writeBn` exactly
+### 7.2 `appendScriptNum` — minimal push, using `go-sdk`'s own helpers
 
-Four branches, in this order. **Getting these wrong still decodes**, which is precisely why golden hex vectors are mandatory:
+**Do not hand-roll the little-endian sign-magnitude serialisation, and do not emulate `@bsv/sdk`'s `Script.writeBn`.** `go-sdk` already implements exactly that encoding in `script/interpreter`. Four branches, in this order — the first three exist because **minimal push encoding is a script-validity rule**, and only the fourth needs a serialiser:
 
 ```go
+import (
+    "github.com/bsv-blockchain/go-sdk/script"
+    "github.com/bsv-blockchain/go-sdk/script/interpreter"
+)
+
 func appendScriptNum(s *script.Script, n int64) error {
-    if n > (1<<53)-1 || n < -((1<<53)-1) {
-        return fmt.Errorf("%w: %d", ErrNumberOutOfRange, n)   // mirrors the TS throw
+    if n > maxScriptInt || n < -maxScriptInt {          // maxScriptInt = 1<<53 - 1
+        return fmt.Errorf("%w: %d", ErrNumberOutOfRange, n)
     }
     switch {
-    case n == 0:            return s.AppendOpcodes(script.OpZERO)     // 0x00
-    case n == -1:           return s.AppendOpcodes(script.Op1NEGATE)  // 0x4f
-    case n >= 1 && n <= 16: return s.AppendOpcodes(byte(int(script.OpONE) + int(n) - 1)) // 0x51..0x60
-    default:                return s.AppendPushData(scriptNumBytes(n))
+    case n == 0:
+        return s.AppendOpcodes(script.Op0)              // 0x00
+    case n == -1:
+        return s.AppendOpcodes(script.Op1NEGATE)        // 0x4f
+    case n >= 1 && n <= 16:
+        return s.AppendOpcodes(script.Op1 + byte(n) - 1) // 0x51..0x60
+    default:
+        // Fresh value per call: Bytes() mutates its receiver (see below).
+        sn := &interpreter.ScriptNumber{Val: big.NewInt(n), AfterGenesis: true}
+        return s.AppendPushData(sn.Bytes())
     }
 }
 ```
 
-`scriptNumBytes`: take the `big.Int` absolute value → `Bytes()` (big-endian minimal) → if the MSB of the top byte is set, **prepend** `0x00` (positive) or `0x80` (negative); otherwise **OR** `0x80` into the top byte when negative → **reverse to little-endian**.
+**Real signatures, read from `/Users/personal/go/pkg/mod/github.com/bsv-blockchain/go-sdk@v1.3.2/script/` — not guessed:**
 
-**Do not use `go-sdk`'s `AppendBigInt`.** It is big-endian magnitude with no sign byte and no small-int opcodes — a completely different, undecodable format.
+| Symbol | Signature | Note |
+|---|---|---|
+| `script.AppendPushData` | `func (s *Script) AppendPushData(d []byte) error` | Delegates to `EncodePushDatas` → `PushDataPrefix`; minimal for all lengths ≤ 0xFFFF |
+| `script.AppendOpcodes` | `func (s *Script) AppendOpcodes(oo ...uint8) error` | **Rejects** `OpDATA1..OpPUSHDATA4` (`0x01..0x4e`) with `ErrInvalidOpcodeType` — so it cannot be used for pushes, only for the opcode branches |
+| `script.PushDataPrefix` | `func PushDataPrefix(data []byte) ([]byte, error)` | Exported; the minimal-prefix rule of §7.1 |
+| `script.EncodePushDatas` | `func EncodePushDatas(parts [][]byte) ([]byte, error)` | — |
+| `interpreter.ScriptNumber` | `type ScriptNumber struct { Val *big.Int; AfterGenesis bool }` | Fields are **exported**; construct directly |
+| `interpreter.MakeScriptNumber` | `func MakeScriptNumber(bb []byte, scriptNumLen int, requireMinimal, afterGenesis bool) (*ScriptNumber, error)` | The decode direction (§7.7) |
+| `(*ScriptNumber).Bytes` | `func (n *ScriptNumber) Bytes() []byte` | Little-endian with a sign bit — exactly the encoding required |
+| `(*ScriptNumber).Set` | `func (n *ScriptNumber) Set(i int64) *ScriptNumber` | — |
+| `script.Op0` / `OpZERO` / `OpFALSE` | `byte = 0x00` | Three names, same value |
+| `script.Op1NEGATE` | `byte = 0x4f` | — |
+| `script.Op1` / `OpONE` … `script.Op16` | `byte = 0x51 … 0x60` | — |
+| `script.OpRETURN` | `byte = 0x6a` | — |
 
-### 7.3 `jsRound` — ECMAScript `Math.round`, FMA-safe
+**Three verified gotchas, each of which would be a silent defect:**
 
-Go's `math.Round` rounds half **away from zero**; ECMAScript rounds half **up (toward +∞)**. They differ on exact negative halves. Additionally, the Go compiler may contract `v * 1e6` into an FMA on some architectures, shifting the product.
+1. **`Bytes()` mutates its receiver on negative values.** It does `if isNegative { n.Neg() }` and never restores the sign. Measured: a `ScriptNumber` holding `-128` returns `8080` on the first `Bytes()` call and **`8000` on the second**, with `Val` left at `+128`. **Always construct a fresh `ScriptNumber` per call** — never cache one, never `Set()` and reuse across fields.
+2. **`AfterGenesis` is a capacity hint only, at v1.3.2 — do not rely on that.** The `!AfterGenesis` branch clamps to `MaxInt32`/`MinInt32`, but the clamped slice feeds only `make([]byte, 0, len(bb)+1)`; the encoding loop re-reads `n.Val`. Measured: `2^53−1` yields `ffffffffffff1f` with `AfterGenesis` either `true` or `false`. It is still set **explicitly `true`**, because the intent is full-width values and a future SDK release could make that branch load-bearing.
+3. **`AppendBigInt` is the wrong function.** `func (s *Script) AppendBigInt(bInt big.Int) error` is literally `AppendPushData(bInt.Bytes())` — big-endian magnitude, **no sign byte**. Measured: `AppendBigInt(-128)` emits `0180`, i.e. it encodes `−128` as `+128`. Undecodable. Never use it.
+
+Verified output of the branches above (`go-sdk v1.3.2`): `0 → OP_0`, `-1 → OP_1NEGATE`, `1..16 → 0x51..0x60`, `17 → 0111`, `127 → 017f`, `128 → 028000`, `-128 → 028080`, `2147483647 → 04ffffff7f`, `2147483648 → 050000008000`, `9007199254740991 → 07ffffffffffff1f`.
+
+### 7.3 Float scaling — choose sane Go semantics and DOCUMENT the rule
+
+The two `float` fields are scaled ×1e6 and stored as integers. **The ECMAScript `Math.round` emulation is removed:** it existed only so the rounding matched JavaScript's half-up-toward-+∞ behaviour on exact negative halves, which mattered only for parity.
+
+**The rule, chosen and documented — write it verbatim into a comment above the function:**
+
+> **Scaled floats are rounded half away from zero, using Go's `math.Round`.** `-1.5e-6` therefore encodes as `-2`, not `-1`. This is Go's native and least surprising behaviour, it is symmetric about zero, and it is deliberately *not* JavaScript's `Math.round` (which rounds half toward +∞ and would give `-1`). Nothing outside this backend decodes these values (§7.0), so no external consumer can observe the difference; the golden files of §7.4 pin it against accidental change.
 
 ```go
-func jsRound(x float64) float64 {
-    if math.IsNaN(x) || math.IsInf(x, 0) { return x }   // caller must reject; see §7.5
-    f := math.Floor(x)
-    if x-f >= 0.5 { return f + 1 }
-    return f
+// scaleFloat converts a physical value to its on-chain integer representation.
+// Rounding: half away from zero (math.Round). See the rule above.
+func scaleFloat(v float64) (int64, error) {
+    if math.IsNaN(v) || math.IsInf(v, 0) {
+        return 0, fmt.Errorf("%w: %v", ErrNonFinite, v)      // §7.5
+    }
+    scaled := math.Round(v * FloatScale)
+    if scaled > maxScriptInt || scaled < -maxScriptInt {
+        return 0, fmt.Errorf("%w: %v", ErrNumberOutOfRange, v)
+    }
+    return int64(scaled), nil
 }
-// call site, with an explicit conversion to defeat FMA contraction:
-scaled := float64(v)
-scaled = float64(scaled * float64(FloatScale))
-n := int64(jsRound(scaled))
 ```
 
-Pinned divergence vectors: `-1.2345675 → -1234567`, `-0.0000005 → 0`, `-1.5e-6 → -1`, `-2.5e-6 → -2`.
+Two details that are **not** parity concerns and survive on their own merits:
 
-### 7.4 The golden-vector contract: `internal/weather/testdata/vectors.json`
+- **The non-finite guard is mandatory.** `int64(math.NaN())` is implementation-defined in Go, so one junk Tempest value would otherwise commit arbitrary bytes to mainnet with no error at all. Reject before converting (§7.5).
+- **The range check precedes the conversion**, so `appendScriptNum`'s own `maxScriptInt` bound is never reached by way of an overflowing float.
 
-**A golden vector that can be silently regenerated is not a contract**, and **a golden vector generated from a floating dependency is a moving target.** Both problems are live in this repo today.
+*Removed with the JS emulation:* the `jsRound` helper, the FMA-defeating `float64(scaled * float64(FloatScale))` dance, and the pinned divergence vectors (`-1.2345675`, `-0.0000005`, `-1.5e-6`, `-2.5e-6`) that existed purely to prove agreement with ECMAScript. **Keep those four values as a rounding-rule table test** (§17.2 test 5) — same inputs, but asserted against the Go rule above rather than against JavaScript.
+
+### 7.4 The golden-file contract: `internal/weather/testdata/golden/`
+
+The goldens are **self-generated from this Go encoder**. They are a **change detector**, not a correctness oracle: their job is to make an accidental edit to field order, number encoding or the rounding rule fail loudly in CI, so that such a change is always a deliberate, reviewed one. There is no external byte string to agree with (§7.0).
 
 | Rule | Detail |
 |---|---|
-| **Reproducibility — the step an earlier draft got wrong** | That draft listed `package-lock.json` as a file to *retain*. **It does not exist**: `.gitignore:1-4` ignores `package-lock.json` and `yarn.lock`, and `git ls-files \| grep -i lock` returns nothing. So the step is: **edit `.gitignore` to un-ignore it** (`!parity/ts/package-lock.json`, `!frontend/package-lock.json`), pin `@bsv/sdk` to the **exact** version `1.10.3` (no caret — `package.json` says `^1.7.0` while `node_modules` holds 1.10.3, i.e. a fresh `npm install` today already resolves a different minor than the range implies), run `npm install` in `parity/ts/`, and **commit the lockfile**. `Script.writeNumber`/`writeBin` encoding is exactly what the vectors capture, so a patch release could otherwise move them under the port. |
-| Provenance | `vectors.json` records, **inside the file**: `sdkVersion: "1.10.3"`, `sourceCommit: "<weather-proof git sha>"`, `generatedAt`. |
-| `make parity` **verifies by default** | Regenerate into a temp file and `diff` against the committed vectors; **fail the build on any difference**. Regeneration is behind an explicit `make parity-regen`. Wired to the CI parity job with `git diff --exit-code internal/weather/testdata/vectors.json`, so a drifting encoder fails CI rather than a test file being quietly regenerated. |
-| No tsc caveat | The earlier draft's "generation requires excluding `src/scripts/prove-data-lock.ts` from tsc" is **deleted**: that file does not exist at `HEAD` and `npx tsc --noEmit` exits 0. |
-| **Retention — the TS oracle survives the port** | `git mv` into `parity/ts/` (§5 row 20). `make parity-regen` runs `tsc` over that tree to rebuild `dist/format/encoder.js`, then `parity/ts/gen-vectors.ts` writes `internal/weather/testdata/vectors.json`. **Generate the vectors BEFORE any TypeScript deletion lands** (§21.1 phase 1). |
+| **Provenance, and the reproducibility trap** | The file records `formatVersion` and `schemaFieldCount` and **nothing else**. It must contain **no wall-clock timestamp and no git revision.** Both were tried and both break regenerate-and-diff: a `generatedAt` differs between two runs seconds apart, and `git rev-parse HEAD` is stable within a run but changes on the very next commit — so every subsequent commit would fail the diff — and it differs between a full clone and a shallow CI clone. **A golden file must be a pure function of the code under test.** |
+| **Regeneration is explicit and Go-native** | `go test ./internal/weather -run TestGolden -update` rewrites the files behind an `-update` flag registered with `flag.Bool`. Default `go test` **verifies** and fails on any difference. There is **no `make parity` / `make parity-regen`**: those drove a TypeScript oracle that no longer exists (§7.0). |
+| **CI cannot be satisfied by regenerating** | `go.yml` runs the plain `go test ./...` (which verifies) **and** a `git diff --exit-code internal/weather/testdata/golden/` step, so a drifting encoder fails CI rather than a test file being quietly rewritten (§15.8). |
+| **Determinism is asserted, not assumed** | A test encodes the same record 100 times and asserts identical bytes each time, and the encode path is reviewed for the three determinism hazards: **map iteration** (forbidden — `FieldSchema` is an ordered slice, never a map), **wall-clock reads**, and **randomness**. |
+| No TypeScript in the loop | Nothing in the generation path shells out to `node`, `tsc` or `npm`, so no ordering dependency exists between the Go tests and any TypeScript change. *(Consequently the earlier draft's "generate the vectors BEFORE any TypeScript deletion lands" constraint is deleted — it no longer means anything.)* |
 
 Contents:
 
-1. **Three fixture hexes**, asserted **byte-exact** (not round-tripped): the **36 B** all-zero floor, the **99 B** real Tempest sample, and the repo's own **211 B** `extremeWeatherData` fixture.
-2. **The `writeNumber` table**: `0 → 00`, `-1 → 4f`, `1..16 → 51..60`, `17 → 0111`, `127 → 017f`, `128 → 028000`, `-128 → 028080`, `2147483647 → 04ffffff7f`, `2147483648 → 050000008000`, `9007199254740991 → 07ffffffffffff1f`, plus the two out-of-range cases that must **error**.
-3. **The `writeBin` length-boundary table**: byte lengths 0, 1, 75, 76, 255, 256, 500.
-4. **The `jsRound` divergence vectors** of §7.3.
+1. **Encoder goldens** for a fixed set of records, each stored as `{name, data, scriptHex, scriptLen}`: the **36 B** all-zero floor, the **99 B** real Tempest sample, the repo's own **211 B** `extremeWeatherData` fixture, an all-negative-values record (exercising the `OP_1NEGATE` and sign-bit branches), and a **297 B** record sitting exactly on the cap.
+2. **The `appendScriptNum` table**: `0 → 00`, `-1 → 4f`, `1..16 → 51..60`, `17 → 0111`, `127 → 017f`, `128 → 028000`, `-128 → 028080`, `2147483647 → 04ffffff7f`, `2147483648 → 050000008000`, `9007199254740991 → 07ffffffffffff1f`, plus the two out-of-range cases that must **error**.
+3. **The push-length boundary table**: byte lengths 0, 1, 75, 76, 255, 256 — the `PushDataPrefix` transitions verified in §7.2.
+4. **The rounding-rule table** of §7.3, asserted against the documented Go rule.
 5. **Negative cases** (§7.5): NaN, ±Inf, a non-integral value in an integer field, `|n| > 2^53−1`.
+6. **Round-trip coverage** (§7.7): every golden record decodes back to a value deeply equal to its input, plus a property test over randomly generated in-range records. **The round trip is the correctness test; the goldens are the change detector.** Both are required — a symmetric encoder+decoder edit round-trips perfectly and only the goldens catch it.
 
-### 7.5 Error semantics — TS parity, stated and enforced
+### 7.5 Error semantics — stated and enforced on their own merits
 
-TypeScript **throws** on all of these (BigNumber `RangeError`, `Math.round(NaN)` → `writeNumber` throw, `TypeError` on a null string) but **silently writes `0x00`** for a missing integer or boolean. A Go port that defaulted everything to zero would publish a valid-but-different record where TS refused to write at all. Enforce the distinction in **two** places:
+The distinction below is **not** a parity artefact and survives unchanged: **an absent field is a defaulted field; a present-but-garbage field is a rejected reading.** The reason is data integrity, not TypeScript. A port that defaulted everything to zero would silently publish a record asserting `air_temperature = 0` for a station whose sensor returned `"n/a"` — a plausible-looking lie written to mainnet forever. Enforce it in **two** places:
 
 | Layer | Rule |
 |---|---|
-| `internal/tempest/mapper.go` | **Absent** field (`undefined`/`null`) → the JS `??` fallback: `0`, `""`, `false`. **Present but unparseable** (NaN, ±Inf, a non-numeric string in a numeric field, a non-string in a string field) → **reject the whole reading**: do not insert the row, log WARN with station id and field name, count it as `stationsRejected`. |
-| `internal/weather/encoder.go` | Return a **typed error** (`ErrNonFinite`, `ErrNonIntegral`, `ErrNumberOutOfRange`, `ErrStringTooLong`) on non-finite floats, non-integral values in integer fields, and `|n| > 2^53−1`. Never write approximate bytes. `ErrStringTooLong` fires only above the 65535-byte `writeBin` limit; shorter-but-oversized strings are caught downstream by the §7.6 script-size cap and fail with `script_too_large` instead. |
+| `internal/tempest/mapper.go` | **Absent** field (`undefined`/`null`/key missing) → the documented fallback: `0`, `""`, `false`. **Present but unparseable** (NaN, ±Inf, a non-numeric string in a numeric field, a **non-integral number in an integer field**, a non-string in a string field) → **reject the whole reading**: do not insert the row, log WARN with station id and field name, count it as `stationsRejected`. |
+| `internal/weather/encoder.go` | Return a **typed error** (`ErrNonFinite`, `ErrNonIntegral`, `ErrNumberOutOfRange`, `ErrStringTooLong`, `ErrScriptTooLarge`) on non-finite floats, non-integral values in integer fields, `\|n\| > 2^53−1`, and a script over the cap. Never write approximate bytes, and never return a script the cap forbids. `ErrStringTooLong` fires only above the 65535-byte push limit; a shorter-but-oversized string is caught by the §7.6 cap and surfaces as `ErrScriptTooLarge` → `script_too_large` on the row. |
 
-In Go, `jsRound(NaN)` is `NaN` and the subsequent `int64` conversion is **implementation-defined** — one junk Tempest value would otherwise commit arbitrary bytes to mainnet with no error. That is a **different on-chain record**, not a divergence any golden vector can catch.
+**Why the non-finite guard is load-bearing:** in Go, `int64(math.NaN())` is **implementation-defined**, so one junk Tempest value would otherwise commit arbitrary bytes to mainnet with no error raised anywhere. That is a wrong on-chain record, and **no golden file can catch it** — the goldens only see the inputs the test supplies. The guard in `scaleFloat` (§7.3) is the only thing standing there.
+
+*(Changed from the earlier draft: integer fields now **reject** a fractional value rather than truncating it. Truncation was mimicry of JavaScript's `parseInt`, adopted for parity only. Rejecting is the safer rule and is the documented behaviour — §4.1's `mapper.go` row.)*
 
 ### 7.6 The script size cap
 
@@ -892,25 +965,35 @@ Headroom at 297: **128 B over the 169 B design worst case (75.7 %)**, 109 B over
 
 Records exceeding the cap are marked terminal `failed` **individually** (§10.7) with `error = "script_too_large: N bytes > cap"` and raise alarm 8 — exceeding 297 B means Tempest introduced a much longer enum string and a human must look. `WEATHER_ALLOW_MULTICLAIM_SCRIPTS=true` is the incident escape hatch: it downgrades the config check to a WARN and permits paying 2 claims per record until the schema question is settled.
 
-A unit test asserts the encoded 211 B fixture is ≤ 297 B, and that a synthetic 298 B record is rejected by the publisher's size check **before** `CreateAction` is called.
+**The cap is enforced in the encoder, not only in the publisher.** `Encode` returns `ErrScriptTooLarge` for anything over the configured bound, so no oversized script can reach `CreateAction` by any path; the publisher's partition step (§10.7) consumes that typed error to isolate the row. This is the one hard numeric constraint that survives from the original §7 unchanged — it is **fuel arithmetic, not style**, and it is the reason a longer script is a correctness bug rather than an aesthetic one.
 
-### 7.7 The decoder
+**The boundary is pinned by test:** a synthetic record encoding to **exactly 297 B is accepted**, one encoding to **298 B is rejected** with `ErrScriptTooLarge`, and the rejection is asserted to happen **before** `CreateAction` is called. The 211 B `extremeWeatherData` fixture is asserted ≤ 297 B. A golden record sitting exactly on the cap is committed (§7.4 item 1), so a future field addition that pushes the worst case over the line fails loudly.
 
-`go-sdk`'s `DecodeScript` sets `op.Data = b` **including** the `0x6a` byte, where TS excludes it — a naive translation of the TS PATH-B branch silently mis-parses everything read back off-chain. Use:
+### 7.7 The decoder — ONE layout, the one we write
+
+The decoder exists so the **app** can read back its own records: `GET /api/proof`, reconciliation, and the §14.4 chain-rebuild procedure. It must round-trip whatever §7.1's encoder emits, and nothing else.
+
+**Exactly one layout is supported.** *Removed: the prefix-less legacy fallback (bare `51 <fields>`, 34 chunks) for records written before `c44b7ae`, and the pre-`e2ae463` time-first field order (`FieldSchemaV0`) that an earlier draft carried as a third layout.* Reason: the only records in those layouts are on chain but **unlocatable** — the Atlas cluster that held their txids no longer resolves (§14.1) — so multi-layout support would be untestable code guarding against inputs that cannot arrive. A decoder that silently accepts three field orders is also a live hazard: two of them are pure permutations of the same 33 chunks, so a mis-selected layout reads as plausible garbage rather than as an error.
+
+Use `go-sdk`'s own parser:
 
 ```go
 ops, err := script.DecodeScript(raw, script.DecodeOptionsParseOpReturn)  // steps over OP_RETURN
 ```
 
-**The chunk-count basis matters and is easy to get wrong.** `DecodeOptionsParseOpReturn` only stops `DecodeScript` from swallowing the remainder into `op.Data`; it advances past the `0x6a` byte but **still appends the chunk**, because `ops = append(ops, op)` runs unconditionally at the bottom of the loop. A guard written on a 34-chunk basis therefore **accepts a script truncated by two fields**. **Count 36:** `OP_FALSE`, `OP_RETURN`, `OP_1`, then the 33 field pushes.
+`go-sdk`'s `DecodeScript` otherwise sets `op.Data = b` **including** the `0x6a` byte and swallows the remainder of the script into that one chunk. Verified signature: `func DecodeScript(b []byte, options ...DecodeOptions) ([]*ScriptChunk, error)`, with `DecodeOptionsParseOpReturn DecodeOptions = 0`.
 
-Keep the **prefix-less legacy fallback** (bare `51 <fields>`) for records written before commit `c44b7ae`; that layout decodes to **34** chunks. The guard is per-layout: 36 with the prefix, 34 without.
+**The chunk-count basis matters and is easy to get wrong.** `DecodeOptionsParseOpReturn` only stops `DecodeScript` from swallowing the remainder; it advances past the `0x6a` byte but **still appends the chunk**, because `ops = append(ops, op)` runs unconditionally at the bottom of the loop. A guard written on a 34-chunk basis therefore **accepts a script truncated by two fields**. **Count 36:** `OP_FALSE`, `OP_RETURN`, `OP_1`, then the 33 field pushes. Verified empirically at v1.3.2: decoding `006a5101ff0102` with `DecodeOptionsParseOpReturn` returns **5** chunks (`00`, `6a`, `51`, and the two pushes) — the `0x6a` chunk is present, exactly as this guard assumes.
 
-Decoder negatives to test: version ≠ 1 (hard reject), fewer than 36 chunks in the prefixed layout, trailing chunks tolerated, and the prefix-less fixture at 34.
+For the number direction, `interpreter.MakeScriptNumber(bb, scriptNumLen, requireMinimal, afterGenesis)` is the inverse of §7.2's `Bytes()`; the small-int opcode branches (`OP_0`, `OP_1NEGATE`, `OP_1`..`OP_16`) are decoded from the opcode itself, since those chunks carry no data.
+
+Decoder negatives to test: version ≠ 1 (hard reject), **fewer than 36 chunks** (hard reject), trailing chunks tolerated, a chunk whose push length is not minimal, and a `0x6a` appearing in a field position. *(The prefix-less 34-chunk fixture is removed with the legacy layout.)*
 
 ### 7.8 Version evolution warning
 
-`VERSION` is emitted as a **single opcode**. Version 17 and above would stop being a 1-byte opcode, silently changing the prefix length from 3 to 4 bytes. Any schema change needs a coordinated bump in both decoders. Write this in a comment above the constant.
+`VERSION` is emitted as a **single opcode**. Version 17 and above would stop being a 1-byte opcode, silently changing the prefix length from 3 to 4 bytes **and the chunk count guard from 36**. Write this in a comment above the constant.
+
+Because the format is internal and single-layout (§7.7), a schema or version change is a **coordinated change to `encoder.go`, `decoder.go` and the goldens in one commit** — and the golden diff is what forces it to be noticed. Two constraints bind any future change regardless: it must keep the worst case under the **297-byte cap** (§7.6, or the cap and the server denomination move together), and it must keep `Decode(Encode(x)) == x`.
 
 ---
 
@@ -948,6 +1031,8 @@ All arithmetic in this section was produced by driving the **real** `utxoCollect
 | Design worst case | **169 B** | Stands (encoder unchanged) |
 | All-numeric-extremes synthetic (every int at implausible maxima) | **188 B** | newly measured |
 | The repo's own `extremeWeatherData` fixture (`icon: 'extreme-weather-<emoji>'`) | **211 B** | newly measured |
+
+**Provenance note.** These sizes were measured by running the TypeScript encoder at `HEAD`. They **carry over to the Go encoder unchanged** because a script's length is determined by the field schema (kept identical, §7.1) and by minimal push encoding (kept, §7.2) — not by the rounding rule, which can move a scaled value by at most 1 and therefore changes a push length only if it crosses a sign-byte boundary. **Re-measure them from the Go encoder once §7.4's goldens exist** and treat those as the standing figures; the 128 B of headroom at the 297 B cap absorbs any single-byte drift in the meantime.
 
 The 28-byte `icon` claim is corroborated: `icon` is a free-form `string` in `FIELD_SCHEMA` (`schema.ts:16`), not an enum, so a push costs `len+1` bytes. `'possibly-thunderstorm-night'` (27 chars) = 28 B vs `'possibly-thunderstorm-day'` (25 chars) = 26 B, and swapping them moves the encoded total by exactly 2 B, as measured.
 
@@ -1775,7 +1860,7 @@ func (s Secret) Reveal() string               { return string(s) }   // the only
 
 **This is not an immutable contract.** The byte-for-byte-parity constraint of earlier drafts is **released**: key **order** is irrelevant everywhere (everything goes through `JSON.parse` and is read by name — the TS backend already emits the stats object in two *different* orders on two endpoints and the frontend is indifferent), and the frontend may be edited. What follows distinguishes **what the redesigned frontend genuinely requires** — where a wrong value visibly breaks or crashes the UI — from **what the old API happened to return**.
 
-**The only byte-parity concern in this project is the on-chain encoder (§7), not the HTTP layer.**
+**There is no byte-parity concern anywhere in this project.** The HTTP layer is not a frozen contract, and neither is the on-chain encoder: its format is internal to the backend and parity with the historical TypeScript output is explicitly **not** a requirement (§7.0). The encoder's real constraints are validity, determinism, the 297-byte cap and a round-trip — none of which involve the old bytes.
 
 ### 13.0 Routes and the endpoint set
 
@@ -2106,19 +2191,33 @@ The frontend is kept, not frozen. Exactly these changes ship with the port:
 
 ## 14. Migration and data loss
 
-### 14.1 The decision (made, not open)
+### 14.1 There is nothing to migrate — the old data is gone, not abandoned
 
-**Plain Postgres** (pgx/v5, `data jsonb`, `FOR UPDATE SKIP LOCKED` claim) — **not** "Postgres + backfill".
+**This is not a choice between migrating and starting fresh. The old dataset is unrecoverable, and no backfill is possible at any price.**
+
+**The evidence.** The MongoDB Atlas cluster named in the SSM parameter `/apps/weather-chain/MONGO_URI` **no longer exists**. Its SRV record does not resolve:
+
+```
+$ dig SRV _mongodb._tcp.weatherchain.mezgo0s.mongodb.net
+;; ->>HEADER<<- opcode: QUERY, status: NXDOMAIN
+;; flags: qr rd ra; QUERY: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 0
+```
+
+**`NXDOMAIN`, zero answers — and DNS itself is healthy** (`dig +short google.com` resolves normally from the same resolver, so this is a deleted cluster, not a network fault). There is no host to connect to, no `mongoexport` to run, and no dump anywhere else in the estate.
+
+**And the loss compounds.** The **txids** are what would let old records be located on chain — and they lived **in that cluster and nowhere else**. So even though the transactions are still on the blockchain, and even though a decoder could in principle read them, **there is no index from which to find them.** The TypeScript passed **no labels** on its weather actions and the Go app points at a **different storage server**, so `ListActions` cannot enumerate them either. Chain data without txids is not recoverable data.
+
+**Consequently this is a clean-slate build:** plain Postgres (pgx/v5, `data jsonb`, `FOR UPDATE SKIP LOCKED` claim), starting empty.
 
 | Consequence | Statement |
 |---|---|
-| Existing Mongo weather records and their txids | **Abandoned.** No backfill script is a deliverable. |
-| `/weather/:id` permalinks | **Change.** Every bookmarked link 404s. Ids move from Mongo ObjectId hex to uuidv7 text. |
+| Existing Mongo weather records and their txids | **Gone.** Not deprioritised, not deferred — **unrecoverable**, per the NXDOMAIN evidence above. No backfill script is a deliverable **because no backfill is possible.** |
+| `/weather/:id` permalinks | **Change.** Every bookmarked link 404s. Ids move from Mongo ObjectId hex to uuidv7 text. *(Still true, and still the user-visible consequence to communicate — §20 item 4.)* |
 | The anchored-reading history the demo is selling | **Restarts at zero.** The dashboard's `totalTx` tile starts at 0, and separately drops ~19× in meaning once it counts transactions rather than records (§13.3). |
-| Existing `blockHeight` data | **Assume none exists.** `POST /api/verify`'s persistence path uses a MongoDB multi-document transaction against a standalone `mongo:8.0` with no `--replSet`, so it throws `IllegalOperation` and returns 500 in that deployment shape (§5 row 17). Whether the deployed cluster Mongo is a replica set is **not knowable from this repo**, and it does not matter under abandonment. |
-| SSM | `MONGO_URI` is **retired from the ExternalSecret** in this PR; **the SSM parameter itself is deleted later, separately** (§15.6). `POSTGRES_PASSWORD` is added. |
-| Chain-side recovery of the old history | **Unavailable.** The TS code passed **no labels** on its weather actions, and the Go app points at a **different storage server**, so `ListActions` from the new wallet returns none of the old history. |
-| Insurance | A one-off `mongoexport` snapshot of the `weatherrecords` collection is recorded as an **unowned, non-blocking** task. It is **not** a prerequisite. |
+| Existing `blockHeight` data | **None exists, and none is retrievable.** Independently of the cluster loss, `POST /api/verify`'s persistence path used a MongoDB multi-document transaction against a standalone `mongo:8.0` with no `--replSet`, so it threw `IllegalOperation` and returned 500 in that deployment shape (§5 row 17) — the field was probably never written at all. |
+| SSM | `MONGO_URI` is **retired from the ExternalSecret** in this PR; **the SSM parameter itself is deleted later, separately** (§15.6). It is a string pointing at an NXDOMAIN host, so it protects nothing. `POSTGRES_PASSWORD` is added. |
+| Chain-side recovery of the old history | **Unavailable, twice over.** The txids that would locate the records died with the cluster; and the TS actions carried no labels while the Go app uses a different storage server, so `ListActions` from the new wallet returns none of the old history. |
+| ~~Insurance: a one-off `mongoexport` snapshot~~ | **REMOVED — it is not an option.** An earlier draft recorded a `mongoexport` of `weatherrecords` as unowned, non-blocking insurance "before the external cluster is decommissioned". The cluster is **already gone**, so there is nothing to export. The row is struck rather than deleted so nobody re-proposes it (see also §20 item 6). |
 
 ### 14.2 Why Postgres
 
@@ -2370,7 +2469,7 @@ Net effect: **4 Ingresses → 1; 4 hostnames → 1**; two cert-manager Certifica
 | `/apps/weather-chain/SERVER_PRIVATE_KEY` | **exists** (last modified 2026-03-09), reused (identity pubkey `026d970c…161efd`) |
 | `/apps/weather-chain/TEMPEST_API_KEY` | **exists**, reused |
 | `/apps/weather-chain/POSTGRES_PASSWORD` | **must be created by a human before the include line is uncommented** (§0 P3) — otherwise the ExternalSecret never syncs and both the app and Postgres start with an empty password |
-| `/apps/weather-chain/MONGO_URI` | **Removed from the ExternalSecret in this PR. Do NOT delete the SSM parameter in this PR** — it is the only remaining pointer to the abandoned Mongo dataset, and deleting it destroys any ability to go back and read the old records. Delete it as a separate, later, deliberate step once the new app has been healthy for a while |
+| `/apps/weather-chain/MONGO_URI` | **Removed from the ExternalSecret in this PR.** The SSM parameter itself is deleted as a separate, later, deliberate step once the new app has been healthy for a while — **not** because it protects anything: the cluster it names returns **NXDOMAIN** and the dataset is unrecoverable (§14.1), so it is a dead string. Keeping it out of the cutover PR is hygiene, not insurance |
 
 **The prefix mismatch, stated and left alone.** The parameter prefix is `/apps/weather-chain/*` while everything else is `weather-proof` (repo, namespace, ExternalSecret, target Secret, images, hostname). **The justification for not migrating is not laziness:** `SERVER_PRIVATE_KEY` is a **live mainnet identity key**, and copying it to `/apps/weather-proof/SERVER_PRIVATE_KEY` doubles the number of places that key exists and creates an indefinite window in which two paths hold the same secret with nothing recording which is authoritative. **A one-line comment in `external-secrets.yaml`** — "SSM prefix intentionally remains `/apps/weather-chain/` — pre-rename, not migrated; see PR #N" — costs nothing and prevents someone "tidying" it later.
 
@@ -2456,7 +2555,7 @@ RUN printf '{"viteApiUrl":"%s","viteBsvNetwork":"%s","commit":"%s"}\n' \
 
 …which doubles as a permanently useful production debugging artefact at `https://weather-proof-us-1.bsvblockchain.tech/build-info.json`.
 
-**New `.github/workflows/go.yml`:** top-level `permissions: contents: read`, no job-level grants. `go vet ./...`, `go build ./...`, `go test -race ./...` (with a `postgres:17-alpine` service for the claim-concurrency test), `golangci-lint run`, `govulncheck ./...`, `go mod verify`, a `go mod tidy` no-diff check, `gitleaks`, and the **parity job** of §7.4 (`make parity-regen` then `git diff --exit-code internal/weather/testdata/vectors.json`). Trigger on the same push/PR branches as `build.yml`. **Plus: add `go` to CodeQL's language list** (§6.8) — without it the Go backend is scanned by nothing.
+**New `.github/workflows/go.yml`:** top-level `permissions: contents: read`, no job-level grants. `go vet ./...`, `go build ./...`, `go test -race ./...` (with a `postgres:17-alpine` service for the claim-concurrency test), `golangci-lint run`, `govulncheck ./...`, `go mod verify`, a `go mod tidy` no-diff check, `gitleaks`, and the **golden-file drift check** of §7.4 — `go test ./internal/weather -run TestGolden -update` followed by `git diff --exit-code internal/weather/testdata/golden/`, so an encoder change that was not accompanied by a reviewed golden update fails CI. *(This replaces the deleted parity job, which ran `make parity-regen` against a pinned `@bsv/sdk` oracle and diffed `vectors.json`; there is no `node`, `tsc` or `npm` step in `go.yml` at all — §7.0.)* Trigger on the same push/PR branches as `build.yml`. **Plus: add `go` to CodeQL's language list** (§6.8) — without it the Go backend is scanned by nothing.
 
 ---
 
@@ -2504,20 +2603,24 @@ A stuck round is otherwise **pure silence**: `RunOnce` returns instantly when `r
 
 ## 17. Testing strategy
 
-### 17.1 Parity (the frozen contract)
+### 17.1 Encoder determinism and the golden files (the frozen contract)
 
-Covered in §7.4: `@bsv/sdk` pinned to the **exact** `1.10.3`, **`.gitignore` edited and the lockfile committed**, provenance recorded inside `vectors.json`, `make parity` **verifies** by default, regeneration behind `make parity-regen`, and a CI job that runs the regeneration and `git diff --exit-code`.
+Covered in §7.4. The contract is **self-referential by design**: the goldens are generated from this Go encoder, they contain **no wall-clock timestamp and no git revision** (both were tried and both make regenerate-and-diff fail), regeneration is behind an explicit `go test ./internal/weather -run TestGolden -update`, plain `go test` verifies, and `go.yml` adds `git diff --exit-code internal/weather/testdata/golden/` so a drift cannot be laundered by regenerating the file.
+
+**What this contract is and is not.** It is a **change detector** — it makes an accidental edit to field order, number encoding or the rounding rule fail loudly. It is **not** a correctness oracle against an external reference, because there is none: nothing outside this backend decodes the script (§7.0). Correctness comes from the **round-trip** and the **297-byte cap**; the goldens catch the symmetric encoder+decoder edit that a round-trip cannot.
+
+*Removed with byte-parity (§7.0): the pinned `@bsv/sdk` `1.10.3` oracle, the `parity/ts/` lockfile, `make parity` / `make parity-regen`, and the vectors-generated-from-TypeScript job.*
 
 ### 17.2 Required tests
 
 | # | Area | Test |
 |---|---|---|
-| 1 | Encoder | The three fixture hexes (36 B, 99 B, 211 B) asserted **byte-exact**; the `writeNumber` table; the `writeBin` length-boundary table; the `jsRound` divergence vectors; the negative cases of §7.5. |
+| 1 | **Encoder goldens + determinism** | The golden set of §7.4 item 1 (36 B floor, 99 B sample, 211 B extreme, an all-negative record, a 297 B on-cap record) compared against the committed files; the `appendScriptNum` table; the push-length boundary table; the negative cases of §7.5. **Plus determinism:** encoding the same record 100 times yields identical bytes, and the field order emitted equals `FieldSchema`'s slice order (so a map can never creep into the encode path). *(These are **self-generated** goldens — asserted against the committed Go output, never against TypeScript.)* |
 | 2 | Encoder invariant | No field can ever emit `0x6a` in an opcode position (push ops cap at `0x4b`, below `OP_1NEGATE`). |
-| 3 | Encoder size | The 211 B fixture ≤ 297 B; a synthetic 298 B record is rejected by the publisher **before** `CreateAction`. |
-| 4 | Decoder negatives | Version ≠ 1; **fewer than 36 chunks** in the prefixed layout (§7.7); trailing chunks tolerated; the prefix-less legacy fixture at **34**. |
-| 5 | Float helpers | `EncodeFloat`/`DecodeFloat`/`ValidateFloatPrecision` tables including non-default scales (100, 1e9) and the epsilon cases. |
-| 6 | **Real on-chain fixture** | **Owned task:** pull one real on-chain weather output script into `testdata/` and assert the Go decoder parses it and the Go encoder re-encodes it byte-identically. The TS suite never had this. |
+| 3 | **Encoder cap boundary** | A synthetic record encoding to **exactly 297 B is accepted**; one encoding to **298 B is rejected** with `ErrScriptTooLarge` **by the encoder**; the publisher refuses it **before** `CreateAction`; the 211 B fixture is ≤ 297 B. This pins the money boundary of §7.6 from both sides. |
+| 4 | **Round-trip + decoder negatives** | `Decode(Encode(x))` deep-equals `x` for every golden record **and** for randomly generated in-range records (property test). Negatives: version ≠ 1; **fewer than 36 chunks**; trailing chunks tolerated; a non-minimal push length; `0x6a` in a field position. **One layout only** — *the prefix-less 34-chunk legacy fixture is removed with the legacy layout (§7.7)*. |
+| 5 | Float helpers | `EncodeFloat`/`DecodeFloat`/`ValidateFloatPrecision` tables including non-default scales (100, 1e9) and the epsilon cases, **plus the §7.3 rounding-rule table** — `-1.2345675`, `-0.0000005`, `-1.5e-6`, `-2.5e-6` asserted against the documented half-away-from-zero rule (**not** against ECMAScript's `Math.round`). |
+| 6 | *(removed)* | **The human-gated real on-chain fixture test is deleted.** It required pulling a historical weather output script off WhatsOnChain and asserting the Go encoder re-produced it byte-identically — a byte-parity assertion (§7.0), against a transaction that **cannot be located** now that the txid store is gone (§14.1). Nothing replaces it at this number; test 22 already checks a **freshly published** transaction against reality, which is the part that had operational value. |
 | 7 | HTTP golden files | One golden response file **per endpoint**, byte-compared, driven by a fake store: stations list, station detail, weather list, weather detail, verify, health, proof. Assert **every** §13.1 crash-list item: `txRecords` non-null; `lastTemp` **present and explicitly null** (a test that fails if `omitempty` is ever added); `blockchain` non-nil with all three keys; all 33 `data` keys present with correct JSON types; `totalPages == 0` when `total == 0`; clamped `page` echo; **`items` sorted `created_at DESC`**; `timestamp` matching `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$`; a bare `?` query string accepted; the trailing-slash route; the `stationId` filter; an unknown `status` → 400. **Plus the §6.0 control-19 headers** (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`) present on every one of these responses. |
 | 8 | **Verify contract** | Response is a **bare top-level map**; **every request txid is echoed VERBATIM as a key**, including a mixed-case input; **no value is `null`**; `blockHeight` is `null`, never `0`, when unconfirmed; a 101-txid body → 400; a 65 KiB body → 413; outbound concurrency never exceeds 8; a confirmed txid **persists** `block_height` on the row **and** `stations.last_block_height` in one transaction. |
 | 9 | **SSE contract** | The response contains the literal line `event: stats_update`; `data:` is a **single line** of valid JSON with the four stats keys; **one event is written immediately on connect**; a `:ping` comment appears within 31 s and is **not** a `stats_update`; `Flush` is called per write; the handler returns on `ctx.Done`; the 13th concurrent connection from one IP is refused; the global cap returns 503. **And the §6.0 control-20 asymmetry:** a non-SSE handler gets a per-response write deadline while the SSE handler gets **none**, asserted directly rather than inferred from the absence of a timeout. |
@@ -2527,7 +2630,7 @@ Covered in §7.4: `@bsv/sdk` pinned to the **exact** `1.10.3`, **`.gitignore` ed
 | 13 | Rate limiting | **Peer gate, both directions:** from a peer INSIDE `TRUSTED_PROXY_CIDRS`, the key is `CF-Connecting-IP` when present, the rightmost-untrusted XFF hop otherwise, and `RemoteAddr` only as a last resort; from a peer OUTSIDE the list, `CF-Connecting-IP` and `X-Forwarded-For` are **ignored** and the key is `RemoteAddr` — so 1 000 requests bearing 1 000 distinct `CF-Connecting-IP` values from one untrusted peer produce **one** key and get 429ed. Assert the empty-list case trusts nothing and emits the boot WARN. Plus: a spoofed `X-Forwarded-For` cannot mint unlimited keys (the map is bounded); `/api/health` and `/api/ready` are **never** limited; an `/api/events` request does **not** decrement the general bucket; `RateLimit-*` and `Retry-After` headers on a 429. |
 | 14 | Input validation | Every row of §6.4's inventory: no NaN-equivalent path; `?limit=abc` yields the default, not null; `?search=0` returns 200 (not the TS 500); a malformed `/api/weather/{id}` → 400/404, never 500; a station id overflowing `int32` → 400 not 500; `websearch_to_tsquery` never errors on adversarial input (fuzz it). |
 | 15 | Error leakage | A `*pgconn.PgError` never appears in any response body; every 500 carries a `request_id`; no configured secret appears in any log or error string. |
-| 16 | Tempest mapper | `httpmock` table over the truncation/`parseInt` coercions, the `??` fallbacks for **absent** fields, and the **reject-on-unparseable** rule. (The whole TS service layer was untested.) |
+| 16 | Tempest mapper | `httpmock` table over the **documented Go coercion rules** (§7.5): the `0`/`""`/`false` fallbacks for **absent** fields, and the **reject-on-unparseable** rule — including that a **fractional value in an integer field is rejected, not truncated** (the deliberate divergence from JS `parseInt`, which was only ever mimicked for parity). (The whole TS service layer was untested.) |
 | 17 | Config | **One case per numbered rule of §8.15, cited by number**, each asserting a rejecting input *and* an accepting input: rules **1–7** (secrets, key/network, storage URL, distinct ports, DSN), the mirrored-knob rules **8** (`MaxOneClaimScriptBytes(D) ≥ 36`; asserted at D=23 reject / D=24 accept, **not** against a hardcoded `D ≥ 24`), **9** (`FanoutOutputsPerTx == 100`), **10** (`WEATHER_MAX_SCRIPT_BYTES ≤ MaxOneClaimScriptBytes(D)`, plus the `WEATHER_ALLOW_MULTICLAIM_SCRIPTS` downgrade), **11** (`WEATHER_OUTPUTS_PER_TX ∈ [1,25]`), **12** (the pool-floor predicate, asserted at the shipped values to need 475 against a low water of 600, and to **reject** when `FUEL_TARGET_POOL_SIZE` is lowered to 700), **13** (the one-round cold-start predicate, `12 ≥ 10`; rejects at 9), **14** (lease > timeout), **15–19** (intervals, water band, CIDR parsing + the empty-list WARN, proof limiter, log level), and **20** (`Validate()` returns **all** failures, not the first, and no error string contains any secret). Plus the **reduced rule set** — `Validate()` for `deposit-address`/`deposit`/`requeue`/`stats-recompute` succeeds with `TEMPEST_API_KEY`, both ports and every fuel knob unset (rule 3 and the `S`-only rows of the §8.15 inventory). |
 | 18 | Fuel math | `MaxOneClaimScriptBytes` reproduces §8.3 and is asserted over **D ∈ {17, 20, 24, 28, 30, 40, 50, 55, 56, 60}** — the set containing every denomination where the tempting `10d − 201` closed form is wrong (§8.4); a D ∈ {20,30,40,50,60} sample cannot catch it. Plus a table test asserting `ClaimsRequired` reproduces the claim count of **every row of §8.5 and §8.8**. |
 | 19 | Keeper overrides | Each of the three overrides differs from what `FromThroughput` would have inherited; `Denomination` and `FanoutOutputsPerTx` equal the mirrored server values; the pool gauge is `TotalOutputs`, **not** a `len()` (§5 row 5); a de-duplicated top-up does **not** double-apply the winner's accounting and does not log a mint it did not perform (§5 row 4). |
@@ -2556,9 +2659,9 @@ The adopt-by-label mechanism (§10.2) closes the crash/timeout duplicate path in
 
 Unfixed on `go-wallet-toolbox` main; the storage server signs storage-supplied output scripts verbatim (§12.1). The key stays in this process, but its spending authority is **effectively delegated**: a compromised or buggy storage server can redirect the entire standing float and every claimed fuel/chunk input, on mainnet, under a reused funded identity. The mitigation is **exposure sizing** (≈ 1 580 000 sat maximum blast radius, §12.2), **not elimination**. **Accepted, with the upstream assembler fix recorded as the real remedy.**
 
-### 18.3 Abandoned records and changed permalinks
+### 18.3 Unrecoverable records and changed permalinks
 
-Existing Mongo records and their txids are abandoned; **every bookmarked `/weather/:id` 404s**; the anchored-reading history **restarts at zero**; and the old history is **not** recoverable from chain because the TS actions carried no labels and lived on a different storage server. Separately, the dashboard's `totalTx` tile becomes an honest transaction count and therefore reads ~19× smaller than the number the TypeScript displayed (§13.3). **Accepted** (§14.1).
+**This is a data loss that has already happened, not a trade this port is making.** The MongoDB Atlas cluster holding the weather records **and their txids** no longer resolves (`NXDOMAIN`, §14.1), so: **every bookmarked `/weather/:id` 404s**; the anchored-reading history **restarts at zero**; and the old records cannot be recovered from chain either, because the txids that would locate them died with the cluster and the TS actions carried no labels. Relatedly, the Go decoder reads **only** the layout the Go encoder writes (§7.7) — historical on-chain layouts are unsupported, which costs nothing, since they are unlocatable regardless. Separately, the dashboard's `totalTx` tile becomes an honest transaction count and therefore reads ~19× smaller than the number the TypeScript displayed (§13.3). **Accepted, because no alternative exists** (§14.1).
 
 ### 18.4 Unreachable legacy funds
 
@@ -2594,8 +2697,8 @@ The D=50 arithmetic was produced by driving the collector, not the SQL layer (§
 
 | File | Fate |
 |---|---|
-| `ENCODING.md` | The **Field Order section is factually wrong** — it contradicts `src/format/schema.ts`, which is alphabetical. **Corrected to alphabetical**, with a warning that the schema code is the only normative source. **This is the single most dangerous artifact for anyone re-porting the encoder later.** Retained beside `parity/ts/` as the human-readable half of the oracle. |
-| `SPEC.md` | **Rewritten.** ~60 % of it is the funding spec that no longer exists. Retained beside `parity/ts/`. |
+| `ENCODING.md` | The **Field Order section is factually wrong** — it contradicts `src/format/schema.ts`, which is alphabetical. **Corrected to alphabetical**, with a warning that `internal/weather/schema.go` is now the only normative source. **This is the single most dangerous artifact for anyone touching the encoder later.** **Rewritten to document the format as internal** (§7.0): valid script, fixed order, 297 B cap, round-trip, Go rounding rule — and to state that byte-parity with the old TypeScript is not a requirement. *(It is no longer "the human-readable half of the oracle"; there is no oracle — §7.0.)* |
+| `SPEC.md` | **Rewritten.** ~60 % of it is the funding spec that no longer exists. Kept in place at the repo root; **not** relocated to `parity/ts/`, which is not created (§5 row 20). |
 | `PLAN.md` | Phases 4/5/6 and the economics sections **deleted**. |
 | `VALIDATE.md` | §2, §6 and objectives O4/O6 **deleted**; **§4.2's documented state machine finally becomes true** (terminal `failed` is reachable for the first time — §5 row 15). |
 | `README.md` (root) | Funding section removed; the stale "111 tests / 98 % coverage" claims removed. |
@@ -2621,7 +2724,7 @@ These are logistics, not design decisions. Each has a named decision point befor
 | 3b | **Confirm the `bsva-us-1` pod CIDR** for `TRUSTED_PROXY_CIDRS` (§15.3) against the live cluster rather than shipping the `10.0.0.0/8` placeholder on faith. **This is not cosmetic:** an empty or wrong list makes `clientIP` ignore every forwarding header and the `/api` limiter degrades to one bucket per proxy pod — §6.1 defect 1, the exact bug the port exists to fix. It fails closed and WARNs, so it is safe but must not ship unverified. | **with the deploy PR** (before §21.2 step 8) |
 | 4 | **Hostname change.** `weather-proof.bsvblockchain.tech` → `weather-proof-us-1.bsvblockchain.tech`. Confirm the four legacy CNAMEs (created by external-dns from the now-deleted Ingresses) can be released, and notify anyone holding a bookmark. | with the deploy PR |
 | 5 | **The true station count behind the Tempest token.** The `'19+'` figure is a hardcoded marketing string (§13.0). It feeds the fuel sizing (§8.12's K column). Sizing is safe for K ≤ 20. | opportunistic |
-| 6 | **Old Mongo snapshot.** Unowned, non-blocking insurance (`mongoexport` of `weatherrecords`) before the external cluster is decommissioned. | opportunistic |
+| 6 | ~~**Old Mongo snapshot** (`mongoexport` of `weatherrecords`)~~ **— REMOVED, not deferred.** The Atlas cluster is already gone: `dig SRV _mongodb._tcp.weatherchain.mezgo0s.mongodb.net` returns **NXDOMAIN** while DNS is otherwise healthy (§14.1). There is no host to export from. Struck rather than deleted so it is not re-proposed as cheap insurance. | **n/a — impossible** |
 | 7 | **File the throughput-dashboard denomination bug** against `go-wallet-toolbox`: `cmd/throughput_dashboard/internal/config/config.go:106` hardcodes `DenominationSatoshis = 30` while its own local `infra-config-docker-throughput-mainnet.yaml` derives 20, and `DemoDenomination` short-circuits on the explicit value so no env var or ConfigMap key can override it. **Unrelated to this port** (§0.2) but discovered by it. | opportunistic |
 
 ---
@@ -2634,14 +2737,14 @@ Four independently mergeable units across two repos — the `bsva-infra-flux` de
 
 | # | Phase | Exit criterion | Blocked by |
 |---|---|---|---|
-| 1 | **Golden parity vectors.** Un-ignore and commit the lockfiles, pin `@bsv/sdk` to exactly `1.10.3`, `git mv` the TS oracle to `parity/ts/` **as its own commit**, generate `internal/weather/testdata/vectors.json` from that pinned tree, wire `make parity` (verify) and `make parity-regen`. | `make parity` green against committed vectors | **Nothing — start today.** Blocks everything, and must land **before any TypeScript deletion**: once `src/format/*` is gone the vectors are unregenerable. |
-| 2 | **`internal/weather`** — types, schema, scriptnum, float, encoder, decoder. | tests 1–6 green | phase 1 |
+| 1 | **Go module bootstrap.** There is no Go module in this repo today. Create `go.mod` at the repo root (module `github.com/bsv-blockchain-demos/weather-proof`, `go 1.26.3`) with `go.sum` committed, `.golangci.json` (§4.1), the `Makefile` (`build test lint up down migrate`) and the `go.yml` skeleton (§15.8). *(This replaces the deleted "golden parity vectors" phase — see §7.0. It has no TypeScript step, no `@bsv/sdk` pin and no ordering constraint against any TS change.)* | `go build ./... && go test ./... && golangci-lint run` green on an empty tree | **Nothing — start today.** Blocks everything, because nothing else compiles without it. |
+| 2 | **`internal/weather`** — types, schema, scriptnum, float, encoder, decoder, and the §7.4 goldens committed. | tests 1–5 green (test 6 no longer exists) | phase 1 |
 | 3 | **`internal/store`** + `migrations.sql` + the atomic claim, reaper, stations, stats and adopt-support queries. | test 10 green on the CI Postgres service | phase 2 |
 | 4 | **`internal/api`** + DTOs + middleware + rate limiting + SSE + verify + proof. | tests 7, 8, 9, 13, 14, 15 green | phase 3 |
 | 5 | **`internal/walletconn` + `internal/fuel` + `internal/fuelmath` + `internal/publisher` + `internal/pipeline`.** | tests 11, 12, 17, 18, 19 green | phases 2–4, **and P1/P2 merged** (§0) — the preflight and any live fan-out are meaningless against a server still at D=20 |
 | 6 | **`cmd/weather` CLI + `internal/obs` + the frontend fixes (§13.9) + docs + alarms + the manifest set + CI.** | §21.2 complete | phase 5 |
 
-**Phases 1–4 are independent of the denomination prerequisite** and proceed in parallel with the P1/P2 window; only phase 5 onward requires it. Phases 1 and 2 are also the only ones on the byte-parity critical path, which is why they go first regardless of what else is unblocked.
+**Phases 1–4 are independent of the denomination prerequisite** and proceed in parallel with the P1/P2 window; only phase 5 onward requires it. Phases 1 and 2 go first because everything else compiles against them — **not** because of any byte-parity critical path; that path is deleted (§7.0), and with it the old constraint that the encoder work had to land before any TypeScript change. **No TypeScript is deleted as part of phases 1–2**, and none needs to be (§5 row 20).
 
 ### 21.2 Deploy checklist, in dependency order
 
@@ -2665,7 +2768,7 @@ Every one of these fails **invisibly** if taken out of order.
 | 14 | Watch the first publish: one `CreateAction`, **`claims=11` expected at K=20/S=169** (or 8 at S=121), a `completed` row with a real txid, `outputIndex: 0`, and **no change output on chain** | operator | — |
 | 15 | Confirm `weather-proof-us-1.bsvblockchain.tech` serves the SPA at `/`, `/explorer` and `/station/<id>` deep links resolve (SPA fallback), `/api/stations` returns items, and `/build-info.json` reports `viteBsvNetwork: "main"` | operator | — |
 | 16 | **Follow-up commit:** add `kustomize.toolkit.fluxcd.io/reconcile: disabled` to the now-Bound PVC (§15.4) | infra | Flux churn on future storage edits |
-| 17 | **Later, separately:** delete `/apps/weather-chain/MONGO_URI` from SSM once the new app has been healthy for a while | infra | Deleting it now destroys the only pointer to the abandoned dataset |
+| 17 | **Later, separately:** delete `/apps/weather-chain/MONGO_URI` from SSM once the new app has been healthy for a while | infra | **None — the parameter is already inert.** It points at a cluster whose SRV record returns NXDOMAIN (§14.1), so it is a dead string, not a pointer to a recoverable dataset. Deleting it loses nothing; the only reason to wait is to avoid touching SSM during the cutover |
 
 ---
 
@@ -2695,10 +2798,10 @@ Every one of these fails **invisibly** if taken out of order.
 | R20 | `/api/proof` decision and hardening; atomic BEEF | §13.6 |
 | R21 | **The API the redesigned frontend needs** (5 endpoints + SSE + probes), required vs incidental | §13 |
 | R22 | The two live shipped-image bugs (testnet links, global rate bucket) | §2.3, §6.1, §13.9 |
-| R23 | Parity-vector reproducibility, with the lockfile actually created | §7.4, §5 row 20, §21.1 phase 1 |
+| R23 | **Encoder determinism, the 297 B cap, the round-trip, and the self-generated goldens** — and the explicit release of byte-parity | **§7.0** (why parity is not required, and what was dropped), §7.2–§7.4, §7.6, §7.7, §17.1, §17.2 tests 1–5, §5 row 20 |
 | R24 | Test contract coverage | §17.2 |
 | R25 | Quantitative derivation at D=50 (windows, sawtooth, cascade, pool, chunks, burn) | §8.1–§8.12 |
-| R26 | Migration, permalinks, honest stats semantics | §14.1, §2.2, §13.3, §18.3 |
+| R26 | **Unrecoverable old data** (NXDOMAIN Atlas cluster, txids lost with it, no backfill possible), permalinks, honest stats semantics | §14.1, §2.2, §13.3, §18.3, §20 item 6 |
 | R27 | Legacy funds and identity reuse | §14.3, §18.4 |
 | R28 | Documentation, runbook, alarms | §19 |
 | R29 | Durability (`synchronous_commit`, backups, reconstructibility) | §14.4, §18.5 |
