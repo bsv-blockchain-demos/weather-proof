@@ -592,7 +592,7 @@ func (s *Store) GetStation(_ context.Context, stationID int64) (store.Station, e
 	if !ok {
 		return store.Station{}, store.ErrNotFound
 	}
-	return st, nil
+	return cloneStation(st), nil
 }
 
 // ListStations implements store.StationStore.List.
@@ -635,7 +635,7 @@ func (s *Store) ListStations(_ context.Context, f store.StationFilter) ([]store.
 	}
 	page := make([]store.Station, 0, end-f.Offset)
 	page = append(page, match[f.Offset:end]...)
-	return page, total, nil
+	return cloneStations(page), total, nil
 }
 
 // Stats implements store.StationStore.
@@ -848,6 +848,46 @@ func cloneRecords(recs []store.Record) []store.Record {
 	out := make([]store.Record, 0, len(recs))
 	for _, r := range recs {
 		out = append(out, cloneRecord(r))
+	}
+	return out
+}
+
+// cloneStation is cloneRecord's exact counterpart for Station: it returns a
+// copy of st whose pointer fields point to freshly allocated values, never to
+// the ones s.stations still holds. Every method that hands a Station to a
+// caller must route it through this helper (or through cloneStations for a
+// slice) on the way out, for the same reason cloneRecord exists: real
+// Postgres always returns freshly scanned values, so `*station.LastReading =
+// t` on a Station this fake returned must never be able to reach s.stations.
+func cloneStation(st store.Station) store.Station {
+	if st.Latitude != nil {
+		latitude := *st.Latitude
+		st.Latitude = &latitude
+	}
+	if st.Longitude != nil {
+		longitude := *st.Longitude
+		st.Longitude = &longitude
+	}
+	if st.LastReading != nil {
+		lastReading := *st.LastReading
+		st.LastReading = &lastReading
+	}
+	if st.LastTemp != nil {
+		lastTemp := *st.LastTemp
+		st.LastTemp = &lastTemp
+	}
+	if st.LastBlockHeight != nil {
+		lastBlockHeight := *st.LastBlockHeight
+		st.LastBlockHeight = &lastBlockHeight
+	}
+	return st
+}
+
+// cloneStations applies cloneStation to every element of stations.
+func cloneStations(stations []store.Station) []store.Station {
+	out := make([]store.Station, 0, len(stations))
+	for _, st := range stations {
+		out = append(out, cloneStation(st))
 	}
 	return out
 }

@@ -627,10 +627,21 @@ func TestListZeroLimitReturnsZeroRows(t *testing.T) {
 // internally. Real Postgres always returns freshly-scanned values, so a caller
 // mutating a field's pointee is structurally impossible against it — and must
 // be impossible here too.
+//
+// wantClaimed is deliberately a SEPARATE variable from claimed, captured
+// before anything mutates through a returned pointer. SeedRecord stores
+// ClaimedAt as &claimed verbatim (documented, expected — see SeedRecord's own
+// doc comment), so under the bug this test exists to catch, `*rec.ClaimedAt =
+// mutated` would silently overwrite the memory claimed itself occupies. A
+// comparison against claimed would then read the very corruption it was
+// trying to detect and pass for the wrong reason; wantClaimed, a distinct
+// copy made before the mutation, cannot be reached by that same pointer and
+// stays a trustworthy independent witness.
 func TestGetDoesNotAliasInternalState(t *testing.T) {
 	ctx := context.Background()
 	f := fake.New()
 	claimed := time.Date(2026, 4, 17, 15, 40, 0, 0, time.UTC)
+	wantClaimed := claimed
 	ref := uuid.Must(uuid.NewV7())
 	f.SeedRecord(store.Record{
 		ID: "r1", Status: store.StatusProcessing, ClaimedAt: &claimed, ClaimRef: &ref, CreatedAt: claimed,
@@ -647,9 +658,97 @@ func TestGetDoesNotAliasInternalState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if again.ClaimedAt == nil || !again.ClaimedAt.Equal(claimed) {
+	if again.ClaimedAt == nil || !again.ClaimedAt.Equal(wantClaimed) {
 		t.Fatalf("mutating a returned Record's ClaimedAt corrupted the fake: second Get = %v, want %v",
-			again.ClaimedAt, claimed)
+			again.ClaimedAt, wantClaimed)
+	}
+}
+
+// TestGetStationDoesNotAliasInternalState is round 2's fix for the Station
+// twin of IMPORTANT-5: GetStation returned st straight out of s.stations with
+// no clone, so a caller mutating a pointer field on a returned Station could
+// corrupt the fake's internal state, the same mechanism as the Record case
+// above and structurally impossible against real Postgres. Covers two
+// distinct pointer field types (time.Time and float64) rather than just one.
+//
+// wantReading/wantTemp are independent snapshots for the same reason
+// TestGetDoesNotAliasInternalState's wantClaimed is: SeedStation aliases
+// reading/temp verbatim, so comparing against reading/temp directly would
+// read back the very corruption the test exists to catch.
+func TestGetStationDoesNotAliasInternalState(t *testing.T) {
+	ctx := context.Background()
+	f := fake.New()
+	ss := f.Stations()
+	reading := time.Date(2026, 4, 17, 15, 40, 0, 0, time.UTC)
+	temp := 18.5
+	wantReading := reading
+	wantTemp := temp
+	f.SeedStation(store.Station{StationID: 1000, LastReading: &reading, LastTemp: &temp})
+
+	st, err := ss.Get(ctx, 1000)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	mutatedReading := reading.Add(time.Hour)
+	*st.LastReading = mutatedReading
+	*st.LastTemp = 99
+
+	again, err := ss.Get(ctx, 1000)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if again.LastReading == nil || !again.LastReading.Equal(wantReading) {
+		t.Fatalf("mutating a returned Station's LastReading corrupted the fake: second Get = %v, want %v",
+			again.LastReading, wantReading)
+	}
+	if again.LastTemp == nil || *again.LastTemp != wantTemp {
+		t.Fatalf("mutating a returned Station's LastTemp corrupted the fake: second Get = %v, want %v",
+			again.LastTemp, wantTemp)
+	}
+}
+
+// TestListStationsDoesNotAliasInternalState covers the second round-2 clone
+// site: the re-review noted that on the Record side only Get got a direct
+// aliasing test and the other four clone sites rested on code inspection
+// alone, so this test exists specifically to not repeat that gap for
+// ListStations. Mutates a Station obtained from List, then confirms a
+// separate Get (itself already proven not to alias, by the test above) still
+// sees the original values.
+//
+// wantReading/wantHeight are independent snapshots, same reasoning as the two
+// tests above.
+func TestListStationsDoesNotAliasInternalState(t *testing.T) {
+	ctx := context.Background()
+	f := fake.New()
+	ss := f.Stations()
+	reading := time.Date(2026, 4, 17, 15, 40, 0, 0, time.UTC)
+	height := int64(800000)
+	wantReading := reading
+	wantHeight := height
+	f.SeedStation(store.Station{StationID: 1000, LastReading: &reading, LastBlockHeight: &height, IsActive: true})
+
+	sts, _, err := ss.List(ctx, store.StationFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(sts) != 1 {
+		t.Fatalf("len(sts) = %d, want 1", len(sts))
+	}
+	mutatedReading := reading.Add(time.Hour)
+	*sts[0].LastReading = mutatedReading
+	*sts[0].LastBlockHeight = 999999
+
+	again, err := ss.Get(ctx, 1000)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if again.LastReading == nil || !again.LastReading.Equal(wantReading) {
+		t.Fatalf("mutating a Station from ListStations corrupted the fake: LastReading = %v, want %v",
+			again.LastReading, wantReading)
+	}
+	if again.LastBlockHeight == nil || *again.LastBlockHeight != wantHeight {
+		t.Fatalf("mutating a Station from ListStations corrupted the fake: LastBlockHeight = %v, want %v",
+			again.LastBlockHeight, wantHeight)
 	}
 }
 
