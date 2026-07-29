@@ -333,6 +333,16 @@ func TestEncodeRejectsAnOversizedString(t *testing.T) {
 	}
 }
 
+// TestEncodeRejectsANilRecord covers the other half of the nil-input hazard:
+// Encode used to panic on a nil *WeatherData (d.fieldPtrs() dereferences d), and
+// this pins the typed error instead.
+func TestEncodeRejectsANilRecord(t *testing.T) {
+	_, err := Encode(nil)
+	if !errors.Is(err, ErrNilRecord) {
+		t.Errorf("Encode(nil) error = %v, want ErrNilRecord", err)
+	}
+}
+
 // TestEncodeStringsAreAlwaysDataPushes is why appendField calls AppendPushData
 // and never appendScriptNum for strings: a one-byte string whose byte is
 // 0x01..0x10 must stay recoverable, and OP_1..OP_16 carry no data.

@@ -31,6 +31,10 @@ var (
 // Trailing chunks after the 33 fields are tolerated and ignored. Fewer than
 // ChunksPerRecord chunks is a hard rejection.
 func Decode(s *script.Script) (*WeatherData, error) {
+	if s == nil {
+		return nil, fmt.Errorf("%w: nil script", ErrMalformedScript)
+	}
+
 	// DecodeOptionsParseOpReturn is REQUIRED. Without it go-sdk's DecodeScript
 	// sets op.Data to the whole remainder of the script including the 0x6a byte
 	// and stops, so a weather script parses as 2 chunks instead of 36. Verified
@@ -40,9 +44,14 @@ func Decode(s *script.Script) (*WeatherData, error) {
 		return nil, fmt.Errorf("%w: %w", ErrMalformedScript, err)
 	}
 
-	if len(chunks) < ChunksPerRecord {
+	// Checked against 3+len(FieldSchema) directly, not the ChunksPerRecord
+	// constant: the loop below indexes chunks[3+i] for i up to len(FieldSchema),
+	// so this is the actual invariant that keeps that indexing in bounds even if
+	// FieldSchema and DataFieldsPerRecord (which ChunksPerRecord is derived from)
+	// were ever to drift apart.
+	if len(chunks) < 3+len(FieldSchema) {
 		return nil, fmt.Errorf("%w: %d chunks, want at least %d",
-			ErrMalformedScript, len(chunks), ChunksPerRecord)
+			ErrMalformedScript, len(chunks), 3+len(FieldSchema))
 	}
 
 	if chunks[0].Op != script.OpFALSE || chunks[1].Op != script.OpRETURN {
@@ -57,6 +66,18 @@ func Decode(s *script.Script) (*WeatherData, error) {
 
 	if version != Version {
 		return nil, fmt.Errorf("%w: %d, want %d", ErrUnsupportedVersion, version, Version)
+	}
+
+	// The version chunk's push framing is pinned, unlike data fields. Encode
+	// always emits the bare OP_1 opcode for version 1, never a data push of the
+	// byte 0x01 (e.g. OP_DATA1 0x01, or OP_PUSHDATA1 0x01 0x01) - both of which
+	// decode to the same numeric value and would pass the check above. readField
+	// deliberately tolerates that kind of non-minimal push framing in ordinary
+	// data fields; the version identifies the record layout, so it is the one
+	// place worth pinning to the exact opcode Encode writes.
+	if chunks[2].Op != script.Op1 {
+		return nil, fmt.Errorf("%w: version chunk is opcode %#02x, want the bare %#02x (OP_1)",
+			ErrMalformedScript, chunks[2].Op, script.Op1)
 	}
 
 	d := &WeatherData{}
@@ -82,7 +103,10 @@ func DecodeHex(h string) (*WeatherData, error) {
 }
 
 // IsValidScript reports whether s decodes as a weather record. It is the cheap
-// gate for "is this output one of ours" and never returns a partial record.
+// gate for "is this output one of ours" and never returns a partial record. A
+// nil s (an output whose LockingScript was never set) reports false rather than
+// panicking, because callers scan every output of a transaction, most of which
+// are not this package's.
 func IsValidScript(s *script.Script) bool {
 	_, err := Decode(s)
 

@@ -11,22 +11,36 @@ import (
 	"github.com/bsv-blockchain/go-sdk/script"
 )
 
-// equalRecords compares two records: the two float fields within FloatEpsilon,
+// equalRecords compares two records: float-typed fields within FloatEpsilon,
 // because fixed-point encoding at 1e-6 is lossy by design, and every other field
-// exactly. WeatherData is all scalars, so == covers the remaining 31 fields.
+// exactly. The comparison is DERIVED from FieldSchema/fieldPtrs rather than
+// naming the float fields, so adding a third float field is covered
+// automatically instead of silently downgrading that field to ==.
 func equalRecords(a, b WeatherData) bool {
-	if math.Abs(a.AirDensity-b.AirDensity) > FloatEpsilon {
-		return false
+	ap, bp := a.fieldPtrs(), b.fieldPtrs()
+
+	for i, f := range FieldSchema {
+		switch f.Type {
+		case FieldFloat:
+			if math.Abs(*ap[i].(*float64)-*bp[i].(*float64)) > FloatEpsilon {
+				return false
+			}
+		case FieldInteger:
+			if *ap[i].(*int64) != *bp[i].(*int64) {
+				return false
+			}
+		case FieldString:
+			if *ap[i].(*string) != *bp[i].(*string) {
+				return false
+			}
+		case FieldBoolean:
+			if *ap[i].(*bool) != *bp[i].(*bool) {
+				return false
+			}
+		}
 	}
 
-	if math.Abs(a.StationPressure-b.StationPressure) > FloatEpsilon {
-		return false
-	}
-
-	a.AirDensity, b.AirDensity = 0, 0
-	a.StationPressure, b.StationPressure = 0, 0
-
-	return a == b
+	return true
 }
 
 // TestRoundTripGoldenCases is the correctness test: whatever Encode writes,
@@ -282,11 +296,14 @@ func TestDecodeRejectsTooFewChunks(t *testing.T) {
 }
 
 func TestDecodeRejectsAMissingPrefix(t *testing.T) {
-	// A bare version opcode plus 33 zero fields: 34 chunks, no 00 6a.
-	bare := make([]byte, 0, 1+DataFieldsPerRecord)
+	// A bare version opcode, padded with zero opcodes out to the full chunk
+	// count so this genuinely exercises the prefix check rather than the
+	// chunk-count guard (TestDecodeRejectsTooFewChunks already covers a script
+	// that is merely too short): ChunksPerRecord chunks, no 00 6a.
+	bare := make([]byte, 0, ChunksPerRecord)
 	bare = append(bare, script.Op1)
 
-	for range DataFieldsPerRecord {
+	for range ChunksPerRecord - 1 {
 		bare = append(bare, script.Op0)
 	}
 
@@ -372,10 +389,14 @@ func TestDecodeRejectsOpReturnInAFieldPosition(t *testing.T) {
 }
 
 func TestDecodeRejectsANonMinimalPush(t *testing.T) {
-	// air_density carries 7f00, which decodes numerically to 127 but is not
-	// minimally encoded. Accepting it would mean two distinct scripts decode to
-	// the same record, so Encode would no longer be the only writer of a record's
-	// bytes.
+	// air_density carries 7f00, whose bytes decode numerically to 127 but are not
+	// a minimal representation of it (0x7f alone would be). requireMinimal in
+	// scriptNumFromChunk polices the NUMBER's own byte encoding, not the choice
+	// of push opcode: the decoder deliberately tolerates non-minimal PUSH FRAMING
+	// in ordinary data fields elsewhere (string, numeric and boolean fields can
+	// all arrive via more than one opcode for the same bytes). The version chunk
+	// is the one place push framing itself is pinned, because it identifies the
+	// record layout - see the opcode check in Decode.
 	b := make([]byte, 0, 6+DataFieldsPerRecord)
 	b = append(b, script.OpFALSE, script.OpRETURN, script.Op1, script.OpDATA2, 0x7f, 0x00)
 
@@ -385,6 +406,24 @@ func TestDecodeRejectsANonMinimalPush(t *testing.T) {
 
 	if _, err := Decode(script.NewFromBytes(b)); !errors.Is(err, ErrMalformedScript) {
 		t.Errorf("non-minimal push: error = %v, want ErrMalformedScript", err)
+	}
+}
+
+// TestDecodeRejectsNonMinimalVersionFraming is the one place push framing
+// itself is pinned: the version chunk as a 1-byte data push (OP_DATA1 0x01)
+// decodes numerically to the correct version (1), but Encode never emits this
+// framing - only the bare OP_1 opcode. Unlike TestDecodeRejectsANonMinimalPush,
+// this is about the OPCODE choice, not the number's byte encoding.
+func TestDecodeRejectsNonMinimalVersionFraming(t *testing.T) {
+	b := make([]byte, 0, 4+DataFieldsPerRecord)
+	b = append(b, script.OpFALSE, script.OpRETURN, script.OpDATA1, 0x01)
+
+	for range DataFieldsPerRecord {
+		b = append(b, script.Op0)
+	}
+
+	if _, err := Decode(script.NewFromBytes(b)); !errors.Is(err, ErrMalformedScript) {
+		t.Errorf("non-minimal version framing: error = %v, want ErrMalformedScript", err)
 	}
 }
 
@@ -436,5 +475,25 @@ func TestIsValidScript(t *testing.T) {
 
 	if IsValidScript(script.NewFromBytes(nil)) {
 		t.Error("IsValidScript returned true for an empty script")
+	}
+}
+
+// TestDecodeRejectsANilScript and TestIsValidScriptRejectsANil cover a genuinely
+// nil *script.Script - distinct from script.NewFromBytes(nil) above, which is a
+// non-nil *Script wrapping nil bytes and exercises a different path (the
+// too-few-chunks guard, not a nil pointer). IsValidScript is documented as the
+// cheap gate callers run over every output.LockingScript in a transaction, and
+// LockingScript is nil for any output not built with one, so this is the input
+// shape that actually arrives in practice.
+func TestDecodeRejectsANilScript(t *testing.T) {
+	_, err := Decode(nil)
+	if !errors.Is(err, ErrMalformedScript) {
+		t.Errorf("Decode(nil) error = %v, want ErrMalformedScript", err)
+	}
+}
+
+func TestIsValidScriptRejectsANil(t *testing.T) {
+	if IsValidScript(nil) {
+		t.Error("IsValidScript(nil) returned true, want false")
 	}
 }

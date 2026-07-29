@@ -83,6 +83,15 @@ func scriptNumFromChunk(c *script.ScriptChunk) (int64, error) {
 		return int64(c.Op-script.Op1) + 1, nil
 	case c.Op >= script.OpDATA1 && c.Op <= script.OpPUSHDATA4:
 		// scriptNumLen 8 admits the 7 bytes that 2^53-1 needs plus a sign byte.
+		//
+		// This also makes (*interpreter.ScriptNumber).Int64()'s clamp-on-overflow
+		// PROVABLY UNREACHABLE here: at 8 bytes the largest sign-magnitude value
+		// requireMinimal will accept is 2^63-1 (ffffffffffffff7f), which Int64()
+		// returns exactly. The next value up, 2^63 as [00,00,00,00,00,00,00,80],
+		// is rejected by requireMinimal as non-minimally encoded before Int64()
+		// ever sees it - verified against go-sdk v1.3.2. A future change to
+		// scriptNumLen must re-derive this, or the clamping hazard can silently
+		// return.
 		sn, err := interpreter.MakeScriptNumber(c.Data, 8, true, true)
 		if err != nil {
 			return 0, fmt.Errorf("%w: %w", ErrNotANumber, err)

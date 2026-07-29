@@ -22,12 +22,14 @@ const (
 	DataFieldsPerRecord = 33
 
 	// ChunksPerRecord is the chunk count of a well-formed record script:
-	// OP_FALSE, OP_RETURN, the version opcode, then 33 field pushes.
+	// OP_FALSE, OP_RETURN, the version opcode, then one push per schema field.
 	//
-	// It is 36 and not 34 because script.DecodeOptionsParseOpReturn steps PAST
-	// the 0x6a byte but still appends the OP_RETURN chunk. A guard written on a
-	// 34 basis accepts a script truncated by two whole fields.
-	ChunksPerRecord = 36
+	// It is 3 + DataFieldsPerRecord, DERIVED rather than hand-written, so the two
+	// can never silently disagree. It is 36 and not 34 because
+	// script.DecodeOptionsParseOpReturn steps PAST the 0x6a byte but still
+	// appends the OP_RETURN chunk. A guard written on a 34 basis accepts a
+	// script truncated by two whole fields.
+	ChunksPerRecord = 3 + DataFieldsPerRecord
 )
 
 // MaxScriptInt is the largest magnitude this package will encode: 2^53 - 1.

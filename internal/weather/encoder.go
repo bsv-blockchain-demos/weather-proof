@@ -10,11 +10,16 @@ import (
 // MaxScriptBytes is a HARD cap on the encoded script, and it is money.
 //
 // 297 bytes is the top of the CONTIGUOUS one-claim fuel window at denomination
-// 50: a script one byte longer silently costs a second fuel claim for every
-// record published, forever. It is not 331 (the top of a disjoint island - the
-// 298..321 gap in between already costs two claims) and not 250 (an earlier
-// figure that wastes 47 bytes of usable window). The number must be re-derived
-// whenever the denomination changes, never copied.
+// 50. AT ONE RECORD PER TRANSACTION, a script one byte longer silently costs a
+// second fuel claim for every record published, forever - but the shipped
+// publisher batches 21 records per transaction, and at that batch size a
+// 298-byte record costs nothing extra. 297 is still the right number: it is
+// also the ceiling the configuration validation checks against
+// (WEATHER_MAX_SCRIPT_BYTES <= fuelmath.MaxOneClaimScriptBytes(denomination)).
+// It is not 331 (the top of a disjoint island - the 298..321 gap in between
+// already costs two claims) and not 250 (an earlier figure that wastes 47 bytes
+// of usable window). Whoever next moves this constant must re-derive it at the
+// batch size actually in use, not trust a one-byte cliff that isn't there at 21.
 //
 // Headroom: the real weather sample encodes to 99 bytes and the repository's own
 // adversarial fixture to 211 bytes. The cap exists because conditions, icon,
@@ -40,6 +45,12 @@ var (
 	// ErrUnknownFieldType is returned if FieldSchema ever grows a type this
 	// encoder does not handle. It cannot be triggered by input data.
 	ErrUnknownFieldType = errors.New("unknown field type in schema")
+
+	// ErrNilRecord is returned when Encode is called with a nil *WeatherData.
+	// None of the other typed errors describe "no record was provided" without
+	// stretching their meaning, so this is a new one rather than an overload of
+	// an existing one.
+	ErrNilRecord = errors.New("nil weather data")
 )
 
 // Encode serializes d as a weather locking script:
@@ -56,6 +67,10 @@ var (
 // ErrStringTooLong rather than approximate bytes. There is no path that returns
 // a script the cap forbids.
 func Encode(d *WeatherData) (*script.Script, error) {
+	if d == nil {
+		return nil, ErrNilRecord
+	}
+
 	s := &script.Script{}
 
 	// AppendOpcodes rejects 0x01..0x4e, so it cannot be used for pushes - but
@@ -66,6 +81,14 @@ func Encode(d *WeatherData) (*script.Script, error) {
 	}
 
 	ptrs := d.fieldPtrs()
+
+	// Defends against FieldSchema growing without a matching fieldPtrs entry:
+	// without this check, ranging FieldSchema below would index ptrs out of
+	// bounds and panic instead of reporting the drift.
+	if len(ptrs) != len(FieldSchema) {
+		return nil, fmt.Errorf("%w: fieldPtrs returned %d pointers for %d schema fields",
+			ErrUnknownFieldType, len(ptrs), len(FieldSchema))
+	}
 
 	for i, f := range FieldSchema {
 		if err := appendField(s, f, ptrs[i]); err != nil {

@@ -13,9 +13,13 @@ import (
 //
 //	go test ./internal/weather -run TestGolden -update
 //
-// Plain `go test` VERIFIES. CI additionally runs
-// `git diff --exit-code internal/weather/testdata/golden/`, so a drifting
-// encoder cannot be laundered by regenerating the file.
+// -update exists so a DELIBERATE format change can be re-frozen. Run carelessly,
+// it just as easily launders a drifting encoder: regenerating the file after an
+// unintended change makes TestGolden pass against the new, wrong bytes. There is
+// currently no Go CI on this branch (.github/workflows only builds Docker
+// images) and no automated gate that stops this. Until a workflow runs
+// `git diff --exit-code internal/weather/testdata/golden/` after `-update`, the
+// only protection is reviewer discipline on this diff.
 var updateGolden = flag.Bool("update", false, "rewrite testdata/golden/records.json from the current encoder")
 
 // goldenPath is a string literal, not a value built at run time. That is
@@ -50,6 +54,12 @@ type goldenCase struct {
 	Data WeatherData
 }
 
+// Every fixture string below must be valid UTF-8. goldenRecord.Data round-trips
+// through encoding/json, which substitutes U+FFFD for invalid UTF-8 bytes, so a
+// non-UTF-8 fixture would make the file's data block silently disagree with its
+// own scriptHex. Non-UTF-8 byte coverage belongs in the round-trip tests
+// (decoder_test.go), which never serialize to JSON.
+//
 // goldenCases returns the frozen input set, in a fixed order.
 //
 //   - minimal  the all-zero floor: every field encodes as a single 0x00 byte
