@@ -477,6 +477,182 @@ func TestDepositsAndPreflight(t *testing.T) {
 	}
 }
 
+// TestReapExpiredTiebreaksByID pins the fix for round-1 finding CRITICAL-1:
+// reapExpiredSQL orders claimed_at ASC, id ASC, and one ClaimPending call
+// stamps a whole batch with a single claimed_at, so ties are the common case.
+// Seeding out of id order and truncating with a limit is the shape that a
+// count-only assertion cannot catch: without the id tiebreak, sort.Slice's
+// result for tied keys follows Go's randomized map-iteration order, so which
+// rows a limit-truncated reap returns would be non-deterministic.
+func TestReapExpiredTiebreaksByID(t *testing.T) {
+	ctx := context.Background()
+	f := fake.New()
+	claimed := time.Date(2026, 4, 17, 15, 40, 0, 0, time.UTC)
+	f.Now = func() time.Time { return claimed.Add(9 * time.Minute) }
+	ref := uuid.Must(uuid.NewV7())
+
+	for _, id := range []string{"e", "c", "a", "d", "b"} {
+		f.SeedRecord(store.Record{
+			ID: id, StationID: 1, Status: store.StatusProcessing,
+			ClaimedAt: &claimed, ClaimRef: &ref, CreatedAt: claimed,
+			ObservationTime: claimed, Timestamp: claimed,
+		})
+	}
+
+	reaped, err := f.ReapExpired(ctx, 5*time.Minute, 3)
+	if err != nil {
+		t.Fatalf("ReapExpired: %v", err)
+	}
+	if len(reaped) != 3 {
+		t.Fatalf("len(reaped) = %d, want 3", len(reaped))
+	}
+	want := []string{"a", "b", "c"}
+	for i, id := range want {
+		if reaped[i].ID != id {
+			t.Fatalf("ReapExpired(limit=3) = %v, want %v (claimed_at ASC, id ASC)", ids(reaped), want)
+		}
+	}
+}
+
+// TestReconcileCandidatesTiebreaksByID pins the fix for round-1 finding
+// CRITICAL-2: reconcileCandidatesSQL orders processed_at ASC, id ASC, and
+// Complete stamps a whole batch with a single processed_at, so ties are the
+// common case. Same shape as the ReapExpired test above, for the same reason:
+// a count-only assertion would not catch a missing tiebreak.
+func TestReconcileCandidatesTiebreaksByID(t *testing.T) {
+	ctx := context.Background()
+	f := fake.New()
+	now := time.Date(2026, 4, 17, 15, 40, 0, 0, time.UTC)
+	f.Now = func() time.Time { return now }
+	processedAt := now.Add(-2 * time.Hour)
+
+	for _, id := range []string{"e", "c", "a", "d", "b"} {
+		f.SeedRecord(store.Record{
+			ID: id, Status: store.StatusCompleted, ProcessedAt: &processedAt,
+		})
+	}
+
+	out, err := f.ReconcileCandidates(ctx, time.Hour, 3)
+	if err != nil {
+		t.Fatalf("ReconcileCandidates: %v", err)
+	}
+	if len(out) != 3 {
+		t.Fatalf("len(out) = %d, want 3", len(out))
+	}
+	want := []string{"a", "b", "c"}
+	for i, id := range want {
+		if out[i].ID != id {
+			t.Fatalf("ReconcileCandidates(limit=3) = %v, want %v (processed_at ASC, id ASC)", ids(out), want)
+		}
+	}
+}
+
+// TestPendingDepositsOrdersByCreatedAtThenSuffix pins the fix for round-1
+// finding CRITICAL-3: pendingDepositsSQL orders created_at ASC, suffix ASC —
+// suffix is only the TIEBREAKER, not the primary key. "zzz" is created first
+// and "aaa" second, so a suffix-only sort (alphabetical) would report them
+// backwards from creation order even though neither one ties the other.
+func TestPendingDepositsOrdersByCreatedAtThenSuffix(t *testing.T) {
+	ctx := context.Background()
+	f := fake.New()
+	tick := time.Date(2026, 4, 17, 15, 40, 0, 0, time.UTC)
+	f.Now = func() time.Time {
+		now := tick
+		tick = tick.Add(time.Minute)
+		return now
+	}
+
+	if err := f.NewDeposit(ctx, store.Deposit{Suffix: "zzz", Prefix: "p", Address: "addr", LockingScript: "76a9"}); err != nil {
+		t.Fatalf("NewDeposit zzz: %v", err)
+	}
+	if err := f.NewDeposit(ctx, store.Deposit{Suffix: "aaa", Prefix: "p", Address: "addr", LockingScript: "76a9"}); err != nil {
+		t.Fatalf("NewDeposit aaa: %v", err)
+	}
+
+	pending, err := f.PendingDeposits(ctx)
+	if err != nil {
+		t.Fatalf("PendingDeposits: %v", err)
+	}
+	if len(pending) != 2 {
+		t.Fatalf("len(pending) = %d, want 2", len(pending))
+	}
+	if pending[0].Suffix != "zzz" || pending[1].Suffix != "aaa" {
+		t.Fatalf("PendingDeposits order = [%s %s], want [zzz aaa] (created_at ASC, suffix ASC)",
+			pending[0].Suffix, pending[1].Suffix)
+	}
+}
+
+// TestListZeroLimitReturnsZeroRows pins the fix for round-1 finding
+// IMPORTANT-4: a Limit of zero returns zero rows for both RecordStore.List and
+// StationStore.List — never "unbounded" — while Total still reports the full
+// unpaged count, matching SQL's own LIMIT 0.
+func TestListZeroLimitReturnsZeroRows(t *testing.T) {
+	ctx := context.Background()
+	f := fake.New()
+	base := time.Date(2026, 4, 17, 15, 40, 0, 0, time.UTC)
+	for i, id := range []string{"a", "b", "c"} {
+		obs := base.Add(time.Duration(i) * time.Minute)
+		if _, err := f.Insert(ctx, newRecord(id, 1000, obs)); err != nil {
+			t.Fatalf("Insert: %v", err)
+		}
+	}
+	f.SeedStation(store.Station{StationID: 1000, IsActive: true})
+
+	recs, total, err := f.List(ctx, store.ListFilter{Limit: 0})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(recs) != 0 {
+		t.Fatalf("List(Limit:0) returned %d rows, want 0", len(recs))
+	}
+	if total != 3 {
+		t.Fatalf("List(Limit:0) total = %d, want 3 (Total ignores Limit)", total)
+	}
+
+	sts, total, err := f.Stations().List(ctx, store.StationFilter{Limit: 0})
+	if err != nil {
+		t.Fatalf("ListStations: %v", err)
+	}
+	if len(sts) != 0 {
+		t.Fatalf("ListStations(Limit:0) returned %d rows, want 0", len(sts))
+	}
+	if total != 1 {
+		t.Fatalf("ListStations(Limit:0) total = %d, want 1", total)
+	}
+}
+
+// TestGetDoesNotAliasInternalState is not one of round-1's five numbered
+// findings but pins the fix for IMPORTANT-5 directly: a Record handed to a
+// caller must never share a pointer field's address with what the fake stores
+// internally. Real Postgres always returns freshly-scanned values, so a caller
+// mutating a field's pointee is structurally impossible against it — and must
+// be impossible here too.
+func TestGetDoesNotAliasInternalState(t *testing.T) {
+	ctx := context.Background()
+	f := fake.New()
+	claimed := time.Date(2026, 4, 17, 15, 40, 0, 0, time.UTC)
+	ref := uuid.Must(uuid.NewV7())
+	f.SeedRecord(store.Record{
+		ID: "r1", Status: store.StatusProcessing, ClaimedAt: &claimed, ClaimRef: &ref, CreatedAt: claimed,
+	})
+
+	rec, err := f.Get(ctx, "r1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	mutated := claimed.Add(time.Hour)
+	*rec.ClaimedAt = mutated
+
+	again, err := f.Get(ctx, "r1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if again.ClaimedAt == nil || !again.ClaimedAt.Equal(claimed) {
+		t.Fatalf("mutating a returned Record's ClaimedAt corrupted the fake: second Get = %v, want %v",
+			again.ClaimedAt, claimed)
+	}
+}
+
 func ids(recs []store.Record) []string {
 	out := make([]string, 0, len(recs))
 	for _, r := range recs {

@@ -61,6 +61,15 @@ type RecordStore interface {
 	// ListFilter, served by one static statement with a NULL-able bind
 	// parameter. Two methods would mean two statements with the same ordering
 	// and pagination rules to keep in agreement.
+	//
+	// A Limit of zero or negative returns zero rows. It is never treated as
+	// "no limit." Total is unaffected by Limit and still reports the full
+	// unpaged count of matching rows, so a caller can distinguish "nothing
+	// matched" from "matched, but the page excludes it." Every implementation
+	// must agree on this: SQL's own LIMIT $n returns zero rows for n=0 and
+	// raises a runtime error for a negative n, so an implementation clamps at
+	// this boundary rather than letting either behavior leak through as a
+	// driver error.
 	List(ctx context.Context, f ListFilter) ([]Record, int64, error)
 
 	// Get returns one record, or ErrNotFound.
@@ -95,6 +104,10 @@ type StationStore interface {
 	// List returns one page of stations plus the unpaged total. When
 	// f.Search parses as an integer it is an exact station_id lookup ordered
 	// by station_id; otherwise it is a full-text match ordered by rank.
+	//
+	// As with RecordStore.List, a Limit of zero or negative returns zero rows
+	// rather than being treated as unbounded, and Total still reports the full
+	// unpaged count of matching rows.
 	List(ctx context.Context, f StationFilter) ([]Station, int64, error)
 
 	// Get returns one station, or ErrNotFound.

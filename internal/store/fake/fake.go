@@ -198,7 +198,7 @@ func (s *Store) ClaimPending(_ context.Context, n int, ref uuid.UUID) ([]store.R
 		s.records[r.ID] = r
 		out = append(out, r)
 	}
-	return out, nil
+	return cloneRecords(out), nil
 }
 
 // Complete implements store.RecordStore.
@@ -269,7 +269,13 @@ func (s *Store) FailPermanent(_ context.Context, ids []string, reason string) er
 		r.ProcessedAt = &processedAt
 		r.ClaimedAt = nil
 		r.AdoptRequired = false
-		r.Error = &reason
+		// reasonCopy, not &reason: apply runs once per matched id, and reason is
+		// the enclosing method's single parameter, so &reason would be the SAME
+		// address on every row this call touches — every record it marks would
+		// share one *string, and mutating one record's Error through a pointer
+		// would silently corrupt every sibling from this same batch.
+		reasonCopy := reason
+		r.Error = &reasonCopy
 	})
 }
 
@@ -279,7 +285,8 @@ func (s *Store) RequeueInfra(_ context.Context, ids []string, reason string) err
 		r.Status = store.StatusPending
 		r.ClaimedAt = nil
 		r.AdoptRequired = false
-		r.Error = &reason
+		reasonCopy := reason // see FailPermanent: apply runs once per id.
+		r.Error = &reasonCopy
 	})
 }
 
@@ -289,7 +296,8 @@ func (s *Store) MarkUnknown(_ context.Context, ids []string, reason string) erro
 		r.Status = store.StatusPending
 		r.ClaimedAt = nil
 		r.AdoptRequired = true
-		r.Error = &reason
+		reasonCopy := reason // see FailPermanent: apply runs once per id.
+		r.Error = &reasonCopy
 	})
 }
 
@@ -308,7 +316,17 @@ func (s *Store) ReapExpired(_ context.Context, lease time.Duration, limit int) (
 			stale = append(stale, r)
 		}
 	}
-	sort.Slice(stale, func(i, j int) bool { return stale[i].ClaimedAt.Before(*stale[j].ClaimedAt) })
+	// claimed_at ASC, id ASC: one ClaimPending call stamps a whole batch with a
+	// single claimed_at, so ties are the COMMON case here, not the exception.
+	// Without the id tiebreak, sort.Slice is not stable and iteration over
+	// s.records is randomized, so which rows a limit-truncated reap returns
+	// would be non-deterministic and would disagree with reapExpiredSQL.
+	sort.Slice(stale, func(i, j int) bool {
+		if !stale[i].ClaimedAt.Equal(*stale[j].ClaimedAt) {
+			return stale[i].ClaimedAt.Before(*stale[j].ClaimedAt)
+		}
+		return stale[i].ID < stale[j].ID
+	})
 
 	out := make([]store.Record, 0, len(stale))
 	for i := range stale {
@@ -321,7 +339,7 @@ func (s *Store) ReapExpired(_ context.Context, lease time.Duration, limit int) (
 		s.records[r.ID] = r
 		out = append(out, r)
 	}
-	return out, nil
+	return cloneRecords(out), nil
 }
 
 // Requeue implements store.RecordStore.
@@ -379,17 +397,24 @@ func (s *Store) List(_ context.Context, f store.ListFilter) ([]store.Record, int
 	}
 	sortNewestFirst(match)
 
+	// A Limit of zero or negative returns zero rows, matching SQL's own LIMIT
+	// $n for n=0 (and clamping the n<0 case, which LIMIT itself would refuse
+	// with a runtime error, to the same empty result rather than propagating a
+	// driver error). Total is computed above and is unaffected.
 	total := int64(len(match))
+	if f.Limit <= 0 {
+		return []store.Record{}, total, nil
+	}
 	if f.Offset >= len(match) {
 		return []store.Record{}, total, nil
 	}
 	end := f.Offset + f.Limit
-	if f.Limit <= 0 || end > len(match) {
+	if end > len(match) {
 		end = len(match)
 	}
 	page := make([]store.Record, 0, end-f.Offset)
 	page = append(page, match[f.Offset:end]...)
-	return page, total, nil
+	return cloneRecords(page), total, nil
 }
 
 // Get implements store.RecordStore.
@@ -403,7 +428,7 @@ func (s *Store) Get(_ context.Context, id string) (store.Record, error) {
 	if !ok {
 		return store.Record{}, store.ErrNotFound
 	}
-	return r, nil
+	return cloneRecord(r), nil
 }
 
 // TxIDExists implements store.RecordStore.
@@ -479,11 +504,19 @@ func (s *Store) ReconcileCandidates(_ context.Context, olderThan time.Duration, 
 		}
 		out = append(out, r)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ProcessedAt.Before(*out[j].ProcessedAt) })
+	// processed_at ASC, id ASC, matching reconcileCandidatesSQL: Complete stamps
+	// a whole batch with a single processed_at, so ties are common, and without
+	// the id tiebreak a limit-truncated result would be non-deterministic.
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].ProcessedAt.Equal(*out[j].ProcessedAt) {
+			return out[i].ProcessedAt.Before(*out[j].ProcessedAt)
+		}
+		return out[i].ID < out[j].ID
+	})
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
 	}
-	return out, nil
+	return cloneRecords(out), nil
 }
 
 // Snapshot implements store.RecordStore.
@@ -587,12 +620,17 @@ func (s *Store) ListStations(_ context.Context, f store.StationFilter) ([]store.
 	}
 	sort.Slice(match, func(i, j int) bool { return match[i].StationID < match[j].StationID })
 
+	// Same Limit<=0 rule as RecordStore.List: zero or negative returns zero
+	// rows, never "unbounded." See that method's doc comment for why.
 	total := int64(len(match))
+	if f.Limit <= 0 {
+		return []store.Station{}, total, nil
+	}
 	if f.Offset >= len(match) {
 		return []store.Station{}, total, nil
 	}
 	end := f.Offset + f.Limit
-	if f.Limit <= 0 || end > len(match) {
+	if end > len(match) {
 		end = len(match)
 	}
 	page := make([]store.Station, 0, end-f.Offset)
@@ -654,7 +692,16 @@ func (s *Store) PendingDeposits(_ context.Context) ([]store.Deposit, error) {
 			out = append(out, d)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Suffix < out[j].Suffix })
+	// created_at ASC, suffix ASC, matching pendingDepositsSQL: suffix is only
+	// the TIEBREAKER, not the primary sort key, so this diverges from Postgres
+	// any time suffix-alphabetical order differs from creation order, even
+	// without a tie.
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].Suffix < out[j].Suffix
+	})
 	return out, nil
 }
 
@@ -741,6 +788,68 @@ func stationMatches(st store.Station, search string) bool {
 	needle := strings.ToLower(search)
 	return strings.Contains(strings.ToLower(st.Name), needle) ||
 		strings.Contains(strings.ToLower(st.Location), needle)
+}
+
+// cloneRecord returns a copy of r whose pointer fields point to freshly
+// allocated values, never to the ones s.records still holds. Every method that
+// hands a Record to a caller must route it through this helper (or through
+// cloneRecords for a slice) on the way out.
+//
+// Real Postgres always returns freshly scanned values decoded off the wire, so
+// a caller can never reach into the server's storage through a pointer a query
+// returned. Without this, a Record built by e.g. ClaimPending and stored under
+// s.records[r.ID] shares its *time.Time and *uuid.UUID field VALUES with the
+// slice element handed back to the caller — same struct, copied twice, but the
+// pointer fields inside are the same address both times — so
+// `*rec.ClaimedAt = t` silently corrupts the fake's internal state, something
+// structurally impossible against a real database connection.
+func cloneRecord(r store.Record) store.Record {
+	if r.ClaimRef != nil {
+		ref := *r.ClaimRef
+		r.ClaimRef = &ref
+	}
+	if r.ClaimedAt != nil {
+		claimedAt := *r.ClaimedAt
+		r.ClaimedAt = &claimedAt
+	}
+	if r.TxID != nil {
+		txid := *r.TxID
+		r.TxID = &txid
+	}
+	if r.OutputIndex != nil {
+		outputIndex := *r.OutputIndex
+		r.OutputIndex = &outputIndex
+	}
+	if r.BlockHeight != nil {
+		blockHeight := *r.BlockHeight
+		r.BlockHeight = &blockHeight
+	}
+	if r.ChainStatus != nil {
+		chainStatus := *r.ChainStatus
+		r.ChainStatus = &chainStatus
+	}
+	if r.MinedAt != nil {
+		minedAt := *r.MinedAt
+		r.MinedAt = &minedAt
+	}
+	if r.Error != nil {
+		errText := *r.Error
+		r.Error = &errText
+	}
+	if r.ProcessedAt != nil {
+		processedAt := *r.ProcessedAt
+		r.ProcessedAt = &processedAt
+	}
+	return r
+}
+
+// cloneRecords applies cloneRecord to every element of recs.
+func cloneRecords(recs []store.Record) []store.Record {
+	out := make([]store.Record, 0, len(recs))
+	for _, r := range recs {
+		out = append(out, cloneRecord(r))
+	}
+	return out
 }
 
 func sortNewestFirst(recs []store.Record) {
