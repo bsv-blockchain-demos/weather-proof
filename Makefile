@@ -97,3 +97,24 @@ dev:
 	@echo "Starting MongoDB only..."
 	docker-compose up -d mongodb
 	@echo "MongoDB started. You can now run 'npm run dev' locally."
+
+.PHONY: go-build go-test go-lint go-golden check
+
+# Named go-* because this Makefile already has Docker-oriented `build` and
+# `test` targets that must keep working. Reconciling them is a later plan.
+go-build:
+	go build ./...
+
+go-test:
+	go test ./... -count=1
+
+go-lint:
+	golangci-lint run
+
+# Regenerate the self-generated golden file. Review the diff before committing:
+# this target is how a deliberate format change is recorded, and a surprising
+# diff here means the encoder changed by accident.
+go-golden:
+	go test ./internal/weather -run TestGolden -update -count=1
+
+check: go-build go-test go-lint
