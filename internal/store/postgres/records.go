@@ -777,3 +777,34 @@ func (s *RecordStore) TxIDExists(ctx context.Context, txID string) (bool, error)
 	}
 	return true, nil
 }
+
+// snapshotSQL is the row-count half of the operational heartbeat, in one query.
+//
+// This is a Seq Scan and will stay one: the chain_status and processed_at
+// filters cannot be served by ix_records_status_created. That is fine at a
+// 60-second sampler interval and ~105k rows a year, but it IS an
+// unbounded-growth full scan, so it is written down here rather than being a
+// surprise in year five.
+const snapshotSQL = `
+SELECT count(*) FILTER (WHERE status = 'pending')    AS pending_rows,
+       count(*) FILTER (WHERE status = 'processing') AS processing_rows,
+       count(*) FILTER (WHERE status = 'failed')     AS failed_rows,
+       count(*) FILTER (WHERE status = 'completed'
+                          AND (chain_status IS NULL OR chain_status <> 'mined')
+                          AND processed_at < now() - interval '1 hour')
+                                                     AS still_unmined_older_than_1h,
+       count(*) FILTER (WHERE chain_status = 'mined')   AS mined_count,
+       count(*) FILTER (WHERE chain_status = 'aborted') AS aborted_count
+  FROM weather_records`
+
+// Snapshot implements store.RecordStore.
+func (s *RecordStore) Snapshot(ctx context.Context) (store.Snapshot, error) {
+	var out store.Snapshot
+	err := s.db.QueryRow(ctx, snapshotSQL).Scan(
+		&out.PendingRows, &out.ProcessingRows, &out.FailedRows,
+		&out.StillUnminedOlderThan1h, &out.MinedCount, &out.AbortedCount)
+	if err != nil {
+		return store.Snapshot{}, classify(err)
+	}
+	return out, nil
+}

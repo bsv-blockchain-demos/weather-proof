@@ -197,3 +197,12 @@ func (s *StationStore) listStations(
 	}
 	return sts, total, nil
 }
+
+// Stats implements store.StationStore.
+//
+// The statement lives in records.go next to Complete, which reads it inside the
+// publish transaction; readStats is shared so the two can never disagree about
+// what the four dashboard values are.
+func (s *StationStore) Stats(ctx context.Context) (store.Stats, error) {
+	return readStats(ctx, s.db)
+}
