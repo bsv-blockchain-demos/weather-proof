@@ -16,12 +16,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
 
-      # go-version-file tracks go.mod (1.26.3, no toolchain line) so the CI Go
+      # go-version-file tracks go.mod (1.26.5, no toolchain line) so the CI Go
       # version cannot drift away from the one the module declares.
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5.6.0
         with:
           go-version-file: go.mod
 
@@ -62,9 +62,18 @@ jobs:
       # docs/superpowers/plans/2026-07-28-go-encoder-and-schema.md were verified
       # against.
       - name: Lint
-        uses: golangci/golangci-lint-action@v7
+        uses: golangci/golangci-lint-action@9fae48acfc02a90574d7c304a1758ef9895495fa  # v7.0.1
         with:
           version: v2.12.2
+
+      # CodeQL does not flag dependency CVEs at all, so this step is not
+      # redundant with code scanning even once `go` is added to it (the next step
+      # of this task does that). The two cover different things: govulncheck
+      # scans the dependency graph against the Go vulnerability database, CodeQL
+      # scans first-party code. Pinned to @latest deliberately: a vulnerability
+      # database is only useful when it is current.
+      - name: Vulnerability scan
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
       # The golden file is the wire format's change detector, and `-update`
       # regenerates it. That is what makes a drifting encoder launderable: an
@@ -103,10 +112,10 @@ jobs:
           --health-retries 10
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5.6.0
         with:
           go-version-file: go.mod
 
