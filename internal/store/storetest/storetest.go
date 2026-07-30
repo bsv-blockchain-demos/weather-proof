@@ -26,7 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -51,6 +51,21 @@ const (
 // cleanupBudget bounds the schema drop. t.Context() is canceled just BEFORE
 // cleanup functions run, so cleanup must build its own context.
 const cleanupBudget = 30 * time.Second
+
+// poolCloseBudget bounds how long cleanup waits for the pool built here to
+// drain before giving up.
+//
+// puddle (pgxpool's underlying pool) blocks Close until every acquired
+// connection is returned. A downstream test that fails while holding an
+// acquired connection or an open transaction — pool.Begin then t.Fatal with
+// no Rollback is the classic shape — never returns it, so the raw,
+// unbounded pool.Close would wedge cleanup forever. Reproduced with
+// `-timeout 20s`: the process hung the full 20s, was killed, and the real
+// t.Fatal message was buried about 50 lines down a goroutine dump. Bounding
+// the wait with postgres.ClosePool turns that into a fast, attributable
+// failure instead, and lets the schema-drop cleanup still get its turn (see
+// Pool's single consolidated cleanup below).
+const poolCloseBudget = 3 * time.Second
 
 // RequireDSN returns the test DSN, skipping locally and failing in CI.
 func RequireDSN(t testing.TB) string {
@@ -90,13 +105,82 @@ func (s Schema) Validate() error {
 	if s.Name == "" {
 		return errors.New("storetest: Schema.Name is empty")
 	}
-	if !strings.Contains(s.CreateSQL, s.Name) {
-		return fmt.Errorf("storetest: Schema.CreateSQL does not mention %q", s.Name)
+	if !containsIdent(s.CreateSQL, s.Name) {
+		return fmt.Errorf("storetest: Schema.CreateSQL does not mention %q as a whole identifier", s.Name)
 	}
-	if !strings.Contains(s.DropSQL, s.Name) {
-		return fmt.Errorf("storetest: Schema.DropSQL does not mention %q", s.Name)
+	if !containsIdent(s.DropSQL, s.Name) {
+		return fmt.Errorf("storetest: Schema.DropSQL does not mention %q as a whole identifier", s.Name)
 	}
 	return nil
+}
+
+// isIdentByte reports whether b can appear inside one of the plain,
+// lowercase, underscore-separated schema identifiers every Schema literal in
+// this codebase uses.
+func isIdentByte(b byte) bool {
+	return b == '_' || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
+}
+
+// containsIdent reports whether name appears in sql as a whole identifier,
+// not merely as a substring of some longer one.
+//
+// strings.Contains alone has a substring-collision blind spot:
+// Schema{Name: "a", CreateSQL: "CREATE SCHEMA abc"} would validate even
+// though CreateSQL actually names an entirely different schema, "abc". Since
+// Validate is the one automated check keeping Schema's three fields honest,
+// that gap defeats its whole purpose.
+func containsIdent(sql, name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i+len(name) <= len(sql); i++ {
+		if sql[i:i+len(name)] != name {
+			continue
+		}
+		beforeOK := i == 0 || !isIdentByte(sql[i-1])
+		afterOK := i+len(name) == len(sql) || !isIdentByte(sql[i+len(name)])
+		if beforeOK && afterOK {
+			return true
+		}
+	}
+	return false
+}
+
+// activeSchemas guards against two tests in one process sharing a
+// Schema.Name at the same time.
+//
+// Per-package schema isolation is this harness's whole design (see Schema's
+// doc comment): one test's entry DROP SCHEMA ... CASCADE racing another
+// test's already-pinned connection does not merely serialize, it corrupts
+// state — reproduced as
+// `ERROR: no schema has been selected to create in (SQLSTATE 3F000)` when
+// the drop yanks the schema out from under a connection that already has it
+// pinned as search_path. This map does not attempt to make concurrent use of
+// one name work — that is out of scope by design — it only turns the
+// corruption into an immediate, legible refusal.
+var (
+	activeSchemasMu sync.Mutex
+	activeSchemas   = map[string]bool{}
+)
+
+// lockSchema registers name as in-use and reports whether it succeeded. A
+// false return means another concurrently running test in this process
+// already holds name.
+func lockSchema(name string) bool {
+	activeSchemasMu.Lock()
+	defer activeSchemasMu.Unlock()
+	if activeSchemas[name] {
+		return false
+	}
+	activeSchemas[name] = true
+	return true
+}
+
+// unlockSchema releases name so a later, sequential test may reuse it.
+func unlockSchema(name string) {
+	activeSchemasMu.Lock()
+	defer activeSchemasMu.Unlock()
+	delete(activeSchemas, name)
 }
 
 // Pool returns a pool whose every connection is pinned to a freshly created,
@@ -104,10 +188,18 @@ func (s Schema) Validate() error {
 //
 // The schema is dropped and recreated on entry, so a crashed previous run
 // cannot leak rows into this one, and dropped again on cleanup. Cleanup order
-// matters and is enforced by registration order: t.Cleanup runs LIFO, so the
-// drop is registered FIRST and the pool close SECOND, which means the pool is
-// closed before the drop runs. DROP SCHEMA CASCADE against a schema with live
-// sessions in it would otherwise block.
+// is explicit rather than an accident of t.Cleanup's LIFO registration order:
+// a single consolidated callback closes the pool (bounded by
+// poolCloseBudget) BEFORE attempting the schema drop (bounded by
+// cleanupBudget), because a live session inside the schema could otherwise
+// block DROP SCHEMA ... CASCADE. Both steps are independently bounded so
+// neither a wedged connection nor a lock wait can hang the test process past
+// its own -timeout, and the drop still runs even when the close budget is
+// exceeded.
+//
+// Pool also refuses a second concurrent call for the same schema.Name in
+// this process — see activeSchemas — rather than let two tests corrupt
+// shared state.
 //
 // maxConns must be at least the goroutine count of any concurrency test using
 // this pool. A pool pinned to one connection serializes the race and makes
@@ -117,6 +209,14 @@ func Pool(t testing.TB, schema Schema, maxConns int32) *pgxpool.Pool {
 	if err := schema.Validate(); err != nil {
 		t.Fatalf("storetest.Pool: %v", err)
 	}
+	if !lockSchema(schema.Name) {
+		t.Fatalf("storetest.Pool: schema %q is already in use by another concurrently running test in this "+
+			"process. storetest.Pool shares one schema per Schema.Name and does not support two tests using "+
+			"the same name at the same time — give each parallel test its own Schema.Name, or do not call "+
+			"t.Parallel() on tests that share one.", schema.Name)
+	}
+	t.Cleanup(func() { unlockSchema(schema.Name) })
+
 	dsn := RequireDSN(t)
 	ctx := context.Background()
 
@@ -136,7 +236,19 @@ func Pool(t testing.TB, schema Schema, maxConns int32) *pgxpool.Pool {
 		t.Fatalf("storetest.Pool: %s: %v", schema.CreateSQL, createErr)
 	}
 
+	// pool is filled in below only once pgxpool.NewWithConfig succeeds. It is
+	// declared here, ahead of the one cleanup that closes it, so that
+	// cleanup can run safely (skipping the close step) even on an early
+	// t.Fatalf between here and the assignment.
+	var pool *pgxpool.Pool
 	t.Cleanup(func() {
+		if pool != nil {
+			if closeErr := postgres.ClosePool(pool, poolCloseBudget); closeErr != nil {
+				t.Errorf("storetest cleanup: pool close: %v — likely cause: a test in this package failed "+
+					"while holding an acquired connection or an open transaction (pool.Acquire or pool.Begin) "+
+					"without releasing, committing or rolling it back on its failure path", closeErr)
+			}
+		}
 		dropCtx, cancel := context.WithTimeout(context.Background(), cleanupBudget)
 		defer cancel()
 		if _, dropErr := admin.Exec(dropCtx, schema.DropSQL); dropErr != nil {
@@ -158,11 +270,10 @@ func Pool(t testing.TB, schema Schema, maxConns int32) *pgxpool.Pool {
 		cfg.MinConns = maxConns
 	}
 
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	pool, err = pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Fatalf("storetest.Pool: %v", err)
 	}
-	t.Cleanup(pool.Close)
 
 	if pingErr := pool.Ping(ctx); pingErr != nil {
 		t.Fatalf("storetest.Pool: ping: %v", pingErr)
