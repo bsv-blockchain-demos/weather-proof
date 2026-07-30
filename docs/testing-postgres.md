@@ -50,6 +50,26 @@ error behind that tag: both vet and build exited 0 and reported nothing. The
 runtime env-var skip keeps every file compiled, vetted and linted, and makes
 only execution conditional.
 
+## Why some SKIP lines are expected
+
+Two tests in `internal/store/storetest` — `TestHelperPoolGuardRacers` and
+`TestHelperPoolWedgedConnection` — are subprocess payloads, not tests in their
+own right. Each `t.Skip`s immediately under an ordinary `go test` invocation
+and only runs its real body when a sibling test — `TestPoolRefusesConcurrentReuseOfTheSameSchemaName`
+or `TestPoolCleansUpAfterAWedgedConnection` — re-invokes `go test -run=...` as
+a subprocess with a private env var set. That SKIP is harmless: it is the
+payload test declining to run outside its driver's subprocess, not the
+Postgres suite silently declining to run at all.
+
+The convention this establishes, and that any later subprocess-helper test
+must follow: name it `TestHelper<Something>`, gate its body on a driver-set
+env var, and `t.Skip` when that var is unset. The CI skip-guard (below)
+tolerates a `--- SKIP` under exactly that name prefix and fails the build on
+any other skip. A real test skipping for any other reason — including a
+future `TestHelper*`-named test that skips for a reason unrelated to the
+subprocess-payload pattern — is exactly what the guard exists to catch, so
+don't reach for the prefix as a way to silence it.
+
 ## Isolation, and the one rule it imposes
 
 Each test package owns ONE Postgres schema, named in a `storetest.Schema`
@@ -94,7 +114,9 @@ outcome:
   mistyped `env:` key fails loudly instead of skipping the whole suite;
 - the `-v` output is grepped for `--- SKIP`, because `go test` prints those
   lines only under `-v` and a fully skipped package otherwise prints a bare
-  `ok`;
+  `ok` — except a SKIP under a `TestHelper*` name, which is tolerated for the
+  reason in "Why some SKIP lines are expected" above; any other skip still
+  fails the build;
 - the claim-race step greps its own output for `--- PASS:
   TestClaimPendingNeverDoubleClaims`, because `go test -run` with a pattern
   matching nothing exits 0.

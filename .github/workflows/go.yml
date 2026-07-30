@@ -121,7 +121,12 @@ jobs:
       # -v plus the SKIP grep is what makes the acceptance criterion
       # "nothing skips in CI" actually checkable: `go test` prints `--- SKIP`
       # lines ONLY under -v, and a fully skipped package otherwise prints a
-      # bare `ok`.
+      # bare `ok`. A SKIP under a TestHelper* name is the one tolerated
+      # exception — it is a subprocess-payload test's own harmless self-skip
+      # outside its driver's subprocess invocation, not the suite silently
+      # declining to run. See docs/testing-postgres.md, "Why some SKIP lines
+      # are expected", for the convention and why any OTHER skip still fails
+      # the build.
       - name: Store tests against Postgres
         env:
           WEATHER_TEST_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable
@@ -131,9 +136,9 @@ jobs:
           test -n "$WEATHER_TEST_POSTGRES_DSN"
           test -n "$WEATHER_TEST_REQUIRE_POSTGRES"
           go test -race -count=1 -timeout 10m -v ./internal/store/... 2>&1 | tee /tmp/store-tests.log
-          if grep -q -- '--- SKIP' /tmp/store-tests.log; then
-            echo "a Postgres test skipped in CI; the suite must never skip here"
-            grep -- '--- SKIP' /tmp/store-tests.log
+          if grep -- '--- SKIP' /tmp/store-tests.log | grep -v -- '--- SKIP: TestHelper' | grep -q .; then
+            echo "a Postgres test skipped in CI for a reason other than the TestHelper* subprocess-payload convention; the suite must never skip here (docs/testing-postgres.md)"
+            grep -- '--- SKIP' /tmp/store-tests.log | grep -v -- '--- SKIP: TestHelper'
             exit 1
           fi
 
