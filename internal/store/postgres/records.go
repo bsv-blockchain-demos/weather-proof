@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strconv"
 	"time"
@@ -13,6 +14,19 @@ import (
 	"github.com/bsv-blockchain-demos/weather-proof/internal/store"
 	"github.com/bsv-blockchain-demos/weather-proof/internal/weather"
 )
+
+// recordColumns is the fixed, explicit column list of weather_records, used by
+// every UNALIASED query in this package (List's and Get's SELECT). Column
+// order here is cosmetic — pgx.RowToStructByName matches each result column to
+// a store.Record field by NAME (its `db` tag), not position — but completeness
+// is not: this list, and recordColumnsAliased below, are the only two places
+// naming every column, and no query in this package ever selects `*` (an
+// unmatched column is a hard RowToStructByName runtime error, not a compile
+// error).
+const recordColumns = `id, station_id, timestamp, observation_time, data,
+       status, attempts, claim_ref, adopt_required, claimed_at, txid,
+       output_index, block_height, chain_status, mined_at, error,
+       created_at, processed_at`
 
 // recordColumnsAliased is recordColumns qualified with the r alias, for the
 // RETURNING clause of an `UPDATE weather_records AS r`.
@@ -633,4 +647,133 @@ func (s *RecordStore) Requeue(ctx context.Context, f store.RequeueFilter) (int64
 		return 0, classify(err)
 	}
 	return ct.RowsAffected(), nil
+}
+
+// listRecordsSQL is the record list.
+//
+// The optional filters are NULL-able bind parameters in ONE static statement
+// rather than a conditionally assembled WHERE clause. That is the rule for
+// every optional filter in this package: if a clause is ever assembled at all,
+// only fixed literal fragments may be appended and every value goes in the
+// args slice.
+//
+// ORDER BY created_at DESC, id DESC — the tiebreaker is mandatory, not
+// decoration. See claimSQL's comment and TestListIsATotalOrderAcrossATiedBatch.
+//
+// ACCEPTED RESIDUAL, stated rather than hidden: the tiebreaker makes the order
+// TOTAL, which is necessary but not sufficient for stable pagination. Page
+// boundaries still shift when a new poll lands between the page-1 and page-2
+// requests, because OFFSET counts from a moving head. Keyset pagination
+// (WHERE (created_at, id) < ($1, $2)) would fix both, but the frontend sends
+// page=, so OFFSET is required.
+const listRecordsSQL = `
+SELECT ` + recordColumns + `
+    FROM weather_records
+   WHERE ($1::bigint IS NULL OR station_id = $1)
+     AND ($2::text   IS NULL OR status = $2)
+   ORDER BY created_at DESC, id DESC
+   LIMIT $3 OFFSET $4`
+
+// countRecordsSQL is the unpaged total for pagination. Its predicate is
+// character-for-character the same as listRecordsSQL's, so the two can never
+// disagree about what is in scope.
+const countRecordsSQL = `
+SELECT count(*) FROM weather_records
+   WHERE ($1::bigint IS NULL OR station_id = $1)
+     AND ($2::text   IS NULL OR status = $2)`
+
+// getRecordSQL is the detail read. The id column is text, so a malformed id is
+// a miss rather than a database error — which, together with the store.ValidText
+// screen in Get, is why this path can never produce a 500 for bad input.
+const getRecordSQL = `
+SELECT ` + recordColumns + `
+    FROM weather_records WHERE id = $1`
+
+// txIDExistsSQL is the anti-amplification gate in front of the BEEF proof
+// endpoint. The partial index ix_records_txid ... WHERE txid IS NOT NULL serves
+// it.
+const txIDExistsSQL = `SELECT 1 FROM weather_records WHERE txid = $1 LIMIT 1`
+
+// List implements store.RecordStore.
+//
+// f.Limit is clamped by clampLimit — see its doc for why this is the
+// package's single enforcement point rather than an inline check here. Unlike
+// ClaimPending/ReapExpired/Requeue, a clamped limit does NOT short-circuit the
+// whole method: interfaces.go requires Total to still report the full unpaged
+// count of matching rows even when the page is empty, so the count query
+// below always runs against the same two filter args, independent of whether
+// the page query ran at all.
+func (s *RecordStore) List(ctx context.Context, f store.ListFilter) ([]store.Record, int64, error) {
+	// A *store.Status encodes as text or NULL; passing the pointer straight
+	// through is what makes the NULL-able predicate work.
+	var statusArg *string
+	if f.Status != nil {
+		value := string(*f.Status)
+		statusArg = &value
+	}
+
+	limit, ok := clampLimit(f.Limit)
+	recs := []store.Record{}
+	if ok {
+		rows, err := s.db.Query(ctx, listRecordsSQL, f.StationID, statusArg, limit, f.Offset)
+		if err != nil {
+			return nil, 0, classify(err)
+		}
+		recs, err = collectRecords(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+	}
+
+	var total int64
+	if err := s.db.QueryRow(ctx, countRecordsSQL, f.StationID, statusArg).Scan(&total); err != nil {
+		return nil, 0, classify(err)
+	}
+	return recs, total, nil
+}
+
+// Get implements store.RecordStore.
+//
+// The store.ValidText screen is not defensive noise. A NUL byte cannot be bound
+// to a text parameter at all — measured, SQLSTATE 22021 invalid byte sequence,
+// raised before the predicate is evaluated — and `GET /api/weather/%00`
+// delivers one straight from Go's path decoding. No record id can contain a NUL
+// (they are uuidv7 strings), so such an id is a MISS by definition, and
+// answering ErrNotFound is both true and the only answer that keeps this path
+// unable to 500. B2 additionally rejects the input with a 400 at its parse
+// layer; this is the belt to that braces.
+func (s *RecordStore) Get(ctx context.Context, id string) (store.Record, error) {
+	if store.ValidText(id) != nil {
+		return store.Record{}, store.ErrNotFound
+	}
+	rows, err := s.db.Query(ctx, getRecordSQL, id)
+	if err != nil {
+		return store.Record{}, classify(err)
+	}
+	rec, err := pgx.CollectExactlyOneRow(rows, pgx.RowToStructByName[store.Record])
+	if err != nil {
+		return store.Record{}, classify(err)
+	}
+	return rec, nil
+}
+
+// TxIDExists implements store.RecordStore.
+//
+// Same screen as Get, and it matters more here: this is the anti-amplification
+// gate in front of the proof endpoint, so it is reachable unauthenticated with
+// an arbitrary path segment. A txid containing a NUL matches no row, so
+// (false, nil) is the truthful answer as well as the un-500-able one.
+func (s *RecordStore) TxIDExists(ctx context.Context, txID string) (bool, error) {
+	if store.ValidText(txID) != nil {
+		return false, nil
+	}
+	var one int
+	err := s.db.QueryRow(ctx, txIDExistsSQL, txID).Scan(&one)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, classify(err)
+	}
+	return true, nil
 }
