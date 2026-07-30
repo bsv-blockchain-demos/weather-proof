@@ -190,6 +190,73 @@ func TestClassifiedErrorsLeakNothing(t *testing.T) {
 	}
 }
 
+// TestClassifierRejectsAnAlreadyCanceledContext drives classify's
+// context.Canceled branch through a real Insert call, end to end, with an
+// already-canceled context.
+//
+// The assertion is on the FULL text, not just errors.Is, as a matter of
+// policy for every test in this file — but be clear about what THIS
+// particular reproduction does and does not prove: measured against the real
+// driver, a context that is already canceled before Insert is even called
+// reaches pgx synchronously and comes back as the bare context.Canceled
+// sentinel with nothing attached, so this test cannot by itself catch a
+// classify mutation that forwards the raw error unclassified (confirmed by
+// deliberately introducing that exact mutation in a scratch copy: this test
+// kept passing). What it does prove is that Insert's real plumbing carries
+// the sentinel through unmodified for the common, everyday case — a caller's
+// context already gone by the time the query would run.
+//
+// The mutation THIS test cannot catch — classify silently forwarding driver
+// detail on a canceled/expired context, e.g. from a pgxpool acquire/connect
+// race that produces a *pgconn.ConnectError wrapping `failed to connect to
+// `user=... database=...`: ...` — is covered instead by
+// TestClassifyStripsDetailFromACanceledContextError in
+// errors_internal_test.go, which calls classify directly with a fabricated
+// error of that exact shape. Reproducing that race live and deterministically
+// is not possible: puddle's Acquire races the connection constructor's error
+// against ctx.Done() over the SAME expiring context, so which one a caller
+// observes is inherently nondeterministic (confirmed against a live pool).
+func TestClassifierRejectsAnAlreadyCanceledContext(t *testing.T) {
+	pool := storetest.Fresh(t, storeSchema)
+	rs := postgres.NewRecordStore(pool)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	obs := time.Date(2026, 4, 17, 15, 40, 0, 0, time.UTC)
+
+	_, err := rs.Insert(ctx, store.NewRecord{
+		ID: "canceled-ctx", StationID: 1000, Timestamp: obs, ObservationTime: obs, Data: fullWeatherData(),
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Insert error = %v, want context.Canceled", err)
+	}
+	if err.Error() != context.Canceled.Error() {
+		t.Fatalf("classified error = %q, want exactly %q and nothing more", err.Error(), context.Canceled.Error())
+	}
+}
+
+// TestClassifierRejectsAnExpiredDeadline is
+// TestClassifierRejectsAnAlreadyCanceledContext's counterpart for classify's
+// context.DeadlineExceeded branch. See that test's comment for what this
+// reproduction does and does not prove, and where the mutation it cannot
+// catch is covered instead.
+func TestClassifierRejectsAnExpiredDeadline(t *testing.T) {
+	pool := storetest.Fresh(t, storeSchema)
+	rs := postgres.NewRecordStore(pool)
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Minute))
+	defer cancel()
+	obs := time.Date(2026, 4, 17, 15, 40, 0, 0, time.UTC)
+
+	_, err := rs.Insert(ctx, store.NewRecord{
+		ID: "expired-ctx", StationID: 1000, Timestamp: obs, ObservationTime: obs, Data: fullWeatherData(),
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Insert error = %v, want context.DeadlineExceeded", err)
+	}
+	if err.Error() != context.DeadlineExceeded.Error() {
+		t.Fatalf("classified error = %q, want exactly %q and nothing more", err.Error(), context.DeadlineExceeded.Error())
+	}
+}
+
 func TestJSONBRoundTripsAllThirtyThreeFields(t *testing.T) {
 	pool := storetest.Fresh(t, storeSchema)
 	rs := postgres.NewRecordStore(pool)

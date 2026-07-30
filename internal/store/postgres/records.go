@@ -8,28 +8,6 @@ import (
 	"github.com/bsv-blockchain-demos/weather-proof/internal/store"
 )
 
-// recordColumns is the explicit column list of weather_records, in the exact
-// order and with the exact names store.Record's db tags declare.
-//
-// It is spelled out because SELECT * and RETURNING * are forbidden here:
-// pgx.RowToStructByName treats a column with no matching struct field as a
-// hard RUNTIME error, and RowToStructByNameLax was verified to behave
-// identically — Lax only relaxes struct fields with no matching column, never
-// the reverse. A star select would therefore couple every query in this
-// package to the table's full column list forever, and the next migration
-// would break all of them at runtime with no compile-time signal and no test
-// coverage unless the test database already had the new column.
-const recordColumns = `id, station_id, timestamp, observation_time, data, status, attempts,
-       claim_ref, adopt_required, claimed_at, txid, output_index, block_height,
-       chain_status, mined_at, error, created_at, processed_at`
-
-// recordColumnsAliased is recordColumns qualified with the r alias, for the
-// RETURNING clause of an `UPDATE weather_records AS r`.
-const recordColumnsAliased = `r.id, r.station_id, r.timestamp, r.observation_time, r.data,
-       r.status, r.attempts, r.claim_ref, r.adopt_required, r.claimed_at, r.txid,
-       r.output_index, r.block_height, r.chain_status, r.mined_at, r.error,
-       r.created_at, r.processed_at`
-
 // insertRecordSQL is the poller's write.
 //
 // ON CONFLICT DO NOTHING against ux_records_station_obs is the structural
