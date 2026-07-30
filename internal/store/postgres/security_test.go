@@ -3,12 +3,14 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/bsv-blockchain-demos/weather-proof/internal/config"
 	"github.com/bsv-blockchain-demos/weather-proof/internal/store"
 	"github.com/bsv-blockchain-demos/weather-proof/internal/store/postgres"
 	"github.com/bsv-blockchain-demos/weather-proof/internal/store/storetest"
@@ -24,23 +26,41 @@ var (
 	_ store.PreflightStore = (*postgres.PreflightStore)(nil)
 )
 
+// TestNewWiresEveryMember asserts that postgres.New leaves no field of
+// store.Store nil.
+//
+// The check is REFLECTION over every field, not five hand-written `if agg.X
+// == nil` lines, because the hand-written form is blind to its own
+// obsolescence: MEASURED directly (in a scratch copy, reverted after) by
+// adding a sixth Pinger-typed field to store.Store and leaving postgres.New
+// unaware of it — the struct literal in New still compiles (Go does not
+// require a keyed literal to set every field), and every one of the five
+// hand-written checks still passed, because none of them ever look at a
+// field they were not written to know about. Iterating v.NumField() means a
+// future field is covered automatically, by construction, rather than by
+// remembering to add a sixth line here.
 func TestNewWiresEveryMember(t *testing.T) {
 	pool := storetest.Fresh(t, storeSchema)
 	agg := postgres.New(pool)
-	if agg.Records == nil {
-		t.Error("Store.Records is nil")
+
+	v := reflect.ValueOf(agg)
+	typ := v.Type()
+	for i := range v.NumField() {
+		if v.Field(i).IsZero() {
+			t.Errorf("Store.%s is nil", typ.Field(i).Name)
+		}
 	}
-	if agg.Stations == nil {
-		t.Error("Store.Stations is nil")
-	}
-	if agg.Deposits == nil {
-		t.Error("Store.Deposits is nil")
-	}
-	if agg.Preflight == nil {
-		t.Error("Store.Preflight is nil")
-	}
+
+	// t.Fatal, not t.Error: a nil Store.Health must stop the test HERE
+	// rather than fall through to agg.Health.Ping below. MEASURED directly
+	// (in a scratch copy, reverted after) by dropping Health from
+	// postgres.New: the t.Error above recorded the failure and execution
+	// continued, and calling Ping on the resulting nil interface value
+	// panicked with a nil-pointer dereference that aborted the WHOLE test
+	// binary — not merely this test — losing every other test's result in
+	// the same run.
 	if agg.Health == nil {
-		t.Error("Store.Health is nil")
+		t.Fatal("Store.Health is nil; refusing to call Ping on it")
 	}
 	if err := agg.Health.Ping(context.Background()); err != nil {
 		t.Fatalf("Store.Health.Ping: %v", err)
@@ -177,6 +197,37 @@ func TestNoDriverErrorEscapesTheStore(t *testing.T) {
 	if !errors.Is(deadlineErr, context.DeadlineExceeded) {
 		t.Errorf("Get past its deadline = %v, want errors.Is(…, context.DeadlineExceeded)", deadlineErr)
 	}
+
+	// pgx.BeginFunc's OWN Begin/Commit failure is a SECOND path a driver error
+	// can reach a caller through, distinct from every branch above: those all
+	// provoke an error INSIDE a statement classify already wraps, but
+	// Complete and SetBlockHeights each open their transaction with
+	// pgx.BeginFunc, and BeginFunc's own connect failure bypasses every
+	// classify call inside the closure entirely. An unreachable pool (a real
+	// DSN whose host refuses connections, exactly as
+	// TestClosePoolHonorsItsBudget in pool_test.go builds one) reproduces
+	// this deterministically and without a race: no live server is involved,
+	// so there is nothing to race against, unlike the two black-box canceled-
+	// context tests Task 17 deleted from this package for exactly that
+	// flakiness.
+	unreachable := postgres.DSNParts{
+		Host: "127.0.0.1", Port: 1, User: "u",
+		Password: config.Secret("pw"), Database: "d", SSLMode: "disable",
+	}
+	deadPool, deadErr := postgres.NewPool(context.Background(), unreachable.DSN())
+	if deadErr != nil {
+		t.Fatalf("NewPool(unreachable): %v", deadErr)
+	}
+	defer deadPool.Close()
+	deadRS := postgres.NewRecordStore(deadPool)
+
+	_, completeErr := deadRS.Complete(ctx, "tx",
+		[]store.Publication{{RecordID: "r1", OutputIndex: 0}})
+	assertOpaque("Complete through an unreachable pool", completeErr)
+
+	sbhErr := deadRS.SetBlockHeights(ctx,
+		[]store.BlockHeightUpdate{{TxID: "tx", BlockHeight: 1}})
+	assertOpaque("SetBlockHeights through an unreachable pool", sbhErr)
 }
 
 // TestUnauthenticatedVerifyPathCannotTouchNonCompletedRows is the §6.0

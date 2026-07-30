@@ -42,6 +42,24 @@ var conformanceBase = time.Date(2026, 4, 17, 15, 40, 0, 0, time.UTC)
 // (every fake insert shares one instant), so that specific regression is
 // covered only by each implementation's own test suite, not this one.
 //
+// Station search MEMBERSHIP is also only PARTLY covered, and this note used
+// to claim (wrongly, MEASURED) that only ranking was left unimitated for
+// search. StationSearchSplitsOnOneParsedValue below pins exact-id lookup and
+// whole-single-word matching — the subset where fake/agree — but that
+// fixture uses eight whole, lowercase, unstemmed words that happen to agree,
+// which is exactly the kind of blind spot this project has hit repeatedly:
+// see StationSearchMembershipIsWholeWordNotSubstring below, which pins the
+// PREFIX family instead (six substrings of those same words, all correctly
+// matching NOTHING on both subjects after fake/fake.go's stationMatches
+// switched from strings.Contains to whole-token matching). Three families
+// still disagree and are NOT exercised here, because the fake and Postgres
+// would return genuinely different answers for the identical input rather
+// than merely different rankings — see fake/fake.go's ListStations doc
+// comment for the full account before writing a search test against any of
+// them: STEMMED word forms, MULTI-WORD queries (implicit AND, or a quoted
+// phrase), and websearch_to_tsquery's own OPERATORS (`or`, a leading `-`
+// exclusion, quoting).
+//
 // mk is called once per subtest and must return an EMPTY store. No subtest calls
 // t.Parallel(), because the Postgres implementation of mk shares one schema.
 func RunStoreConformance(t *testing.T, name string, mk func(t *testing.T) store.Store) {
@@ -116,6 +134,64 @@ func RunStoreConformance(t *testing.T, name string, mk func(t *testing.T) store.
 			{"kelvin", 1, "a text search matches name too"},
 			{"reykjavik", 0, "a text miss is an empty page"},
 			{"\x00nul", 0, "a NUL byte cannot be bound at all: empty page, no error"},
+		}
+		for _, c := range cases {
+			sts, total, err := s.Stations.List(ctx, store.StationFilter{Search: c.search, Limit: 50})
+			if err != nil {
+				t.Errorf("List(search=%q) error = %v, want nil (%s)", c.search, err, c.reason)
+				continue
+			}
+			if total != c.want {
+				t.Errorf("List(search=%q) total = %d, want %d (%s)", c.search, total, c.want, c.reason)
+			}
+			if int64(len(sts)) != c.want {
+				t.Errorf("List(search=%q) rows = %d, want %d (%s)", c.search, len(sts), c.want, c.reason)
+			}
+		}
+	})
+
+	// StationSearchSplitsOnOneParsedValue's own fixture is, by its nature, the
+	// blind spot this suite must not repeat: every one of its text cases is a
+	// whole, lowercase, unstemmed single word, which is exactly the narrow
+	// subset where the fake's substring-based search used to happen to agree
+	// with Postgres's websearch_to_tsquery. This subtest instead pins the
+	// PREFIX family specifically, MEASURED directly against Postgres
+	// (`SELECT ... WHERE search_tsv @@ websearch_to_tsquery('english', $1)`):
+	// every one of these six prefixes returns zero rows from a real server,
+	// because websearch_to_tsquery has no prefix operator for plain input —
+	// it treats "brist" as the complete, unstemmable lexeme "brist," which
+	// matches no document containing "Bristol." Before this fix,
+	// strings.Contains made the fake answer YES for every one of them (a
+	// live search box, "search-as-you-type" false positive), which is
+	// membership disagreement, not a ranking difference, and both of this
+	// suite's doc comments used to describe it as the latter.
+	t.Run(name+"/StationSearchMembershipIsWholeWordNotSubstring", func(t *testing.T) {
+		ctx := context.Background()
+		s := mk(t)
+		stations := []store.Station{
+			{StationID: 1000, Name: "Harbor Mast", Location: "Bristol Docks", IsActive: true},
+			{StationID: 1001, Name: "Clifton Ridge", Location: "Bristol Downs", IsActive: true},
+			{StationID: 2000, Name: "Kelvin Yard", Location: "Glasgow", IsActive: true},
+		}
+		for _, st := range stations {
+			if err := s.Stations.Upsert(ctx, st); err != nil {
+				t.Fatalf("Upsert %d: %v", st.StationID, err)
+			}
+		}
+
+		cases := []struct {
+			search string
+			want   int64
+			reason string
+		}{
+			{"brist", 0, "a prefix of \"Bristol\" is not a whole word"},
+			{"bristo", 0, "one letter short of a whole word is still not a whole word"},
+			{"harb", 0, "a prefix of \"Harbor\" is not a whole word"},
+			{"kelv", 0, "a prefix of \"Kelvin\" is not a whole word"},
+			{"glas", 0, "a prefix of \"Glasgow\" is not a whole word"},
+			{"b", 0, "a single leading letter is not a whole word"},
+			{"Bristol", 2, "a whole word matches case-insensitively, unlike a bare prefix"},
+			{"docks", 1, "a whole word inside Location matches even though it is not the first word"},
 		}
 		for _, c := range cases {
 			sts, total, err := s.Stations.List(ctx, store.StationFilter{Search: c.search, Limit: 50})
@@ -667,6 +743,174 @@ func RunStoreConformance(t *testing.T, name string, mk func(t *testing.T) store.
 		want := []string{"rec-a", "rec-b"}
 		if got[0] != want[0] || got[1] != want[1] {
 			t.Errorf("ReconcileCandidates(limit=2) under a tied processed_at = %v, want %v (id ASC tiebreak)", got, want)
+		}
+	})
+
+	t.Run(name+"/NegativeOffsetClampsToZeroForBothListMethods", func(t *testing.T) {
+		ctx := context.Background()
+		s := mk(t)
+		if err := s.Stations.Upsert(ctx, store.Station{StationID: 6600, IsActive: true}); err != nil {
+			t.Fatalf("Upsert: %v", err)
+		}
+		if err := s.Stations.Upsert(ctx, store.Station{StationID: 6601, IsActive: true}); err != nil {
+			t.Fatalf("Upsert: %v", err)
+		}
+		ids := []string{"off-a", "off-b", "off-c"}
+		for i, id := range ids {
+			ts := conformanceBase.Add(time.Duration(i) * time.Minute)
+			if _, err := s.Records.Insert(ctx, newConformanceRecord(id, 6600, ts, 10, "-")); err != nil {
+				t.Fatalf("Insert %s: %v", id, err)
+			}
+		}
+
+		// A negative Offset must behave EXACTLY like Offset: 0 — clamped, never
+		// passed through to a driver runtime error (Postgres: SQLSTATE 2201X,
+		// invalid_row_count_in_result_offset_clause) and never reaching an
+		// unguarded slice expression (the fake: match[f.Offset:end] panics for a
+		// negative f.Offset). interfaces.go's ListFilter.Offset and
+		// StationFilter.Offset doc comments state this as the rule.
+		zeroRecs, zeroTotal, zeroErr := s.Records.List(ctx, store.ListFilter{Limit: 50, Offset: 0})
+		if zeroErr != nil {
+			t.Fatalf("Records.List(Offset=0) error = %v, want nil", zeroErr)
+		}
+		zeroSts, zeroSTotal, zeroSErr := s.Stations.List(ctx, store.StationFilter{Limit: 50, Offset: 0})
+		if zeroSErr != nil {
+			t.Fatalf("Stations.List(Offset=0) error = %v, want nil", zeroSErr)
+		}
+
+		for _, negOffset := range []int{-1, -20, -1000000} {
+			recs, total, err := s.Records.List(ctx, store.ListFilter{Limit: 50, Offset: negOffset})
+			if err != nil {
+				t.Errorf("Records.List(Offset=%d) error = %v, want nil", negOffset, err)
+			}
+			if total != zeroTotal || len(recs) != len(zeroRecs) {
+				t.Errorf("Records.List(Offset=%d) = (%d recs, total=%d), want same as Offset=0 (%d recs, total=%d)",
+					negOffset, len(recs), total, len(zeroRecs), zeroTotal)
+			}
+
+			sts, stotal, serr := s.Stations.List(ctx, store.StationFilter{Limit: 50, Offset: negOffset})
+			if serr != nil {
+				t.Errorf("Stations.List(Offset=%d) error = %v, want nil", negOffset, serr)
+			}
+			if stotal != zeroSTotal || len(sts) != len(zeroSts) {
+				t.Errorf("Stations.List(Offset=%d) = (%d stations, total=%d), want same as Offset=0 (%d stations, total=%d)",
+					negOffset, len(sts), stotal, len(zeroSts), zeroSTotal)
+			}
+		}
+	})
+
+	t.Run(name+"/RequeueSetsTheOperatorErrorMessage", func(t *testing.T) {
+		ctx := context.Background()
+		s := mk(t)
+		if err := s.Stations.Upsert(ctx, store.Station{StationID: 6700, IsActive: true}); err != nil {
+			t.Fatalf("Upsert: %v", err)
+		}
+		if _, err := s.Records.Insert(ctx,
+			newConformanceRecord("requeue-err", 6700, conformanceBase, 10, "-")); err != nil {
+			t.Fatalf("Insert: %v", err)
+		}
+		claimed, err := s.Records.ClaimPending(ctx, 1, uuid.Must(uuid.NewV7()))
+		if err != nil || len(claimed) != 1 {
+			t.Fatalf("ClaimPending = (%d, %v), want (1, nil)", len(claimed), err)
+		}
+		if failErr := s.Records.FailPermanent(ctx, []string{claimed[0].ID}, "boom"); failErr != nil {
+			t.Fatalf("FailPermanent: %v", failErr)
+		}
+
+		// Since: -time.Hour puts the cutoff an hour in the FUTURE relative to
+		// whichever clock this subject uses (the fake's frozen clock, or
+		// Postgres's real now()), so conformanceBase — fixed in April 2026 —
+		// is unambiguously older than it on both subjects without depending
+		// on real-clock drift between insert and requeue. The same technique
+		// NonPositiveLimitIsZeroEverywhereALimitAppears uses.
+		n, requeueErr := s.Records.Requeue(ctx, store.RequeueFilter{
+			Status: store.StatusFailed, Since: -time.Hour, Limit: 10,
+		})
+		if requeueErr != nil {
+			t.Fatalf("Requeue: %v", requeueErr)
+		}
+		if n != 1 {
+			t.Fatalf("Requeue = %d, want 1", n)
+		}
+
+		rec, getErr := s.Records.Get(ctx, "requeue-err")
+		if getErr != nil {
+			t.Fatalf("Get: %v", getErr)
+		}
+		const wantErr = "requeued by operator"
+		if rec.Error == nil || *rec.Error != wantErr {
+			got := "<nil>"
+			if rec.Error != nil {
+				got = *rec.Error
+			}
+			t.Errorf("Error after Requeue = %q, want %q: an operator-driven requeue must overwrite whatever "+
+				"reason a prior FailPermanent left, so the error column reflects WHY the row is pending again",
+				got, wantErr)
+		}
+	})
+
+	t.Run(name+"/RequeueRefusesACompletedStatusFilter", func(t *testing.T) {
+		ctx := context.Background()
+		s := mk(t)
+		if err := s.Stations.Upsert(ctx, store.Station{StationID: 6800, IsActive: true}); err != nil {
+			t.Fatalf("Upsert: %v", err)
+		}
+		if _, err := s.Records.Insert(ctx,
+			newConformanceRecord("requeue-completed", 6800, conformanceBase, 10, "-")); err != nil {
+			t.Fatalf("Insert: %v", err)
+		}
+		claimed, err := s.Records.ClaimPending(ctx, 1, uuid.Must(uuid.NewV7()))
+		if err != nil || len(claimed) != 1 {
+			t.Fatalf("ClaimPending = (%d, %v), want (1, nil)", len(claimed), err)
+		}
+		if _, completeErr := s.Records.Complete(ctx, "requeue-completed-tx",
+			[]store.Publication{{RecordID: claimed[0].ID, OutputIndex: 3}}); completeErr != nil {
+			t.Fatalf("Complete: %v", completeErr)
+		}
+		before, err := s.Records.Get(ctx, "requeue-completed")
+		if err != nil {
+			t.Fatalf("Get before Requeue: %v", err)
+		}
+
+		// RequeueFilter.Status: completed is a STATE-MACHINE HOLE, not a
+		// filter that legitimately matches nothing: un-publishing a completed
+		// row back to pending, without reversing app_stats or the station
+		// counters that Complete already advanced, makes the row
+		// re-claimable and lets a second Complete double-count one reading.
+		// Both implementations must refuse it — see RequeueFilter.Status's
+		// doc comment for the chosen (0, nil) no-op semantic — for BOTH
+		// DryRun and the real write, exactly as a non-positive Limit is
+		// refused before either path runs.
+		for _, dryRun := range []bool{true, false} {
+			n, requeueErr := s.Records.Requeue(ctx, store.RequeueFilter{
+				Status: store.StatusCompleted, Since: -time.Hour, Limit: 10, DryRun: dryRun,
+			})
+			if requeueErr != nil {
+				t.Errorf("Requeue(Status=completed, DryRun=%v) error = %v, want nil", dryRun, requeueErr)
+			}
+			if n != 0 {
+				t.Errorf("Requeue(Status=completed, DryRun=%v) = %d, want 0", dryRun, n)
+			}
+		}
+
+		after, err := s.Records.Get(ctx, "requeue-completed")
+		if err != nil {
+			t.Fatalf("Get after Requeue: %v", err)
+		}
+		if after.Status != store.StatusCompleted {
+			t.Errorf("status after a refused Requeue = %q, want unchanged %q", after.Status, store.StatusCompleted)
+		}
+		if after.AdoptRequired {
+			t.Error("adopt_required after a refused Requeue = true, want unchanged false")
+		}
+		if after.TxID == nil || before.TxID == nil || *after.TxID != *before.TxID {
+			t.Errorf("txid after a refused Requeue = %v, want unchanged %v", after.TxID, before.TxID)
+		}
+		if after.OutputIndex == nil || before.OutputIndex == nil || *after.OutputIndex != *before.OutputIndex {
+			t.Errorf("output_index after a refused Requeue = %v, want unchanged %v", after.OutputIndex, before.OutputIndex)
+		}
+		if after.ProcessedAt == nil || before.ProcessedAt == nil || !after.ProcessedAt.Equal(*before.ProcessedAt) {
+			t.Errorf("processed_at after a refused Requeue = %v, want unchanged %v", after.ProcessedAt, before.ProcessedAt)
 		}
 	})
 

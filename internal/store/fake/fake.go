@@ -192,6 +192,27 @@ func clampLimit(n int) (limit int, ok bool) {
 	return n, true
 }
 
+// clampOffset is the fake's single enforcement point for a negative Offset,
+// mirroring postgres.clampOffset's contract exactly: a negative offset is
+// clamped to zero rather than left to reach a slice expression. Clamp-to-zero
+// is the chosen semantic — it matches "the store is total" the same way
+// clampLimit's zero-rows-not-unbounded rule does — never an error and never
+// "unbounded".
+//
+// It exists because, exactly as with clampLimit, prose alone did not stop this
+// exact divergence: `if f.Offset >= len(match)` never fires for a negative
+// offset, so both List paths in this package reached `match[f.Offset:end]`
+// with a negative low bound and panicked (`slice bounds out of range
+// [-20:]`), measured directly against pristine code. Both List methods in
+// this package now call this one function instead of using f.Offset
+// directly.
+func clampOffset(n int) int {
+	if n < 0 {
+		return 0
+	}
+	return n
+}
+
 // ClaimPending implements store.RecordStore.
 //
 // n is clamped by clampLimit — see its doc comment for why this is the
@@ -401,6 +422,16 @@ func (s *Store) Requeue(_ context.Context, f store.RequeueFilter) (int64, error)
 	if s.FailAll != nil {
 		return 0, s.FailAll
 	}
+	// f.Status == StatusCompleted is refused BEFORE either the DryRun count or
+	// the real write runs — see RequeueFilter.Status's doc comment for why
+	// and for the chosen (0, nil) semantic — for the identical reason a
+	// clamped Limit short-circuits before either path: un-publishing a
+	// completed row back to pending, without reversing app_stats or the
+	// station counters Complete already advanced, makes the row re-claimable
+	// and lets a second Complete double-count one reading.
+	if f.Status == store.StatusCompleted {
+		return 0, nil
+	}
 	limit, ok := clampLimit(f.Limit)
 	if !ok {
 		return 0, nil
@@ -430,10 +461,28 @@ func (s *Store) Requeue(_ context.Context, f store.RequeueFilter) (int64, error)
 		r := match[i]
 		r.Status = store.StatusPending
 		r.AdoptRequired = true
+		// reasonCopy, not a shared &requeuedByOperatorReason: see
+		// FailPermanent's identical comment — this loop runs once per matched
+		// row, and a single shared address would let mutating one requeued
+		// record's Error through a pointer corrupt every sibling this same
+		// call touched.
+		reasonCopy := requeuedByOperatorReason
+		r.Error = &reasonCopy
 		s.records[r.ID] = r
 	}
 	return int64(len(match)), nil
 }
+
+// requeuedByOperatorReason is the fake's exact counterpart to requeueSQL's
+// `error = 'requeued by operator'` literal in records.go. Measured divergence
+// before this existed: the fake left the error column completely untouched by
+// Requeue, so a row FailPermanent had stamped with its own failure reason
+// still carried that stale text after being requeued, while Postgres
+// overwrote it — and B2's admin-requeue tests run against this fake as their
+// only substrate, so a caller inspecting Error to see WHY a row is pending
+// again would have seen two different answers depending on which store was
+// wired in.
+const requeuedByOperatorReason = "requeued by operator"
 
 // List implements store.RecordStore.
 func (s *Store) List(_ context.Context, f store.ListFilter) ([]store.Record, int64, error) {
@@ -465,15 +514,19 @@ func (s *Store) List(_ context.Context, f store.ListFilter) ([]store.Record, int
 	if !ok {
 		return []store.Record{}, total, nil
 	}
-	if f.Offset >= len(match) {
+	// f.Offset is clamped by clampOffset — see its doc comment for why this is
+	// the package's single enforcement point rather than an inline check
+	// here.
+	offset := clampOffset(f.Offset)
+	if offset >= len(match) {
 		return []store.Record{}, total, nil
 	}
-	end := f.Offset + limit
+	end := offset + limit
 	if end > len(match) {
 		end = len(match)
 	}
-	page := make([]store.Record, 0, end-f.Offset)
-	page = append(page, match[f.Offset:end]...)
+	page := make([]store.Record, 0, end-offset)
+	page = append(page, match[offset:end]...)
 	return cloneRecords(page), total, nil
 }
 
@@ -670,9 +723,35 @@ func (s *Store) GetStation(_ context.Context, stationID int64) (store.Station, e
 // ?search= test suite runs against this fake, and a fake that ignored f.Search
 // would let every one of those tests pass while proving nothing. It reproduces
 // the CONTRACT the SQL has — one parsed value drives the branch, a NUL byte
-// matches nothing rather than erroring — and deliberately not the ranking,
-// which is websearch_to_tsquery's and cannot be imitated honestly. Task 19's
+// matches nothing rather than erroring — and it deliberately does not imitate
+// websearch_to_tsquery's RANKING, which cannot be imitated honestly. Task 19's
 // conformance suite asserts the shared part against both implementations.
+//
+// WHAT "shared part" MEANS, STATED PRECISELY, because an earlier version of
+// this comment (and storetest/conformance.go's own omissions note) claimed
+// only ranking was left unimitated, which was measured to be wrong: the text
+// branch is MEMBERSHIP-equivalent to Postgres only for an exact numeric
+// station_id lookup and for a single, whole, unstemmed, case-insensitive word
+// matched against Name or Location — see stationMatches's doc comment for the
+// exact fixture that proved the difference. A search exercising any of the
+// following families will disagree between this fake and Postgres, and a B2
+// test must not assume either answer without checking which store it is
+// running against:
+//
+//   - PREFIXES / partial words ("search-as-you-type"): NEITHER implementation
+//     matches these — websearch_to_tsquery has no prefix operator for plain
+//     input — but do not assume a live search box supports typeahead just
+//     because this fake will now correctly say no along with Postgres.
+//   - STEMMED word forms: Postgres's english dictionary matches "runs"
+//     against a document containing "Running" (MEASURED); this fake does a
+//     literal token comparison and will not.
+//   - MULTI-WORD queries: websearch_to_tsquery treats several
+//     whitespace-separated words as an implicit AND across the whole
+//     document (or a phrase, quoted); this fake requires the entire search
+//     string to equal ONE token, so any multi-word search fails here even
+//     when every word is individually present in Postgres.
+//   - WEBSEARCH OPERATORS: quoting, `or`, and a leading `-` exclusion are
+//     websearch_to_tsquery's own syntax; this fake parses none of it.
 func (s *Store) ListStations(_ context.Context, f store.StationFilter) ([]store.Station, int64, error) {
 	if s.FailAll != nil {
 		return nil, 0, s.FailAll
@@ -698,15 +777,18 @@ func (s *Store) ListStations(_ context.Context, f store.StationFilter) ([]store.
 	if !ok {
 		return []store.Station{}, total, nil
 	}
-	if f.Offset >= len(match) {
+	// f.Offset is clamped by clampOffset — same single enforcement point as
+	// RecordStore.List.
+	offset := clampOffset(f.Offset)
+	if offset >= len(match) {
 		return []store.Station{}, total, nil
 	}
-	end := f.Offset + limit
+	end := offset + limit
 	if end > len(match) {
 		end = len(match)
 	}
-	page := make([]store.Station, 0, end-f.Offset)
-	page = append(page, match[f.Offset:end]...)
+	page := make([]store.Station, 0, end-offset)
+	page = append(page, match[offset:end]...)
 	return cloneStations(page), total, nil
 }
 
@@ -847,6 +929,31 @@ func (s *Store) transition(ids []string, apply func(*store.Record)) error {
 // falls through to text. A value store.ValidText rejects matches nothing,
 // because Postgres cannot bind it at all and the store answers an empty page
 // rather than a 500.
+//
+// The text branch is WHOLE-TOKEN matching — search must equal one entire,
+// lowercased, whitespace-split word of Name or Location — and not a
+// strings.Contains substring test, which this function used until MEASURED
+// directly against a real server: websearch_to_tsquery('english', 'brist')
+// (and five other prefixes of words in this package's own fixture: "bristo",
+// "harb", "kelv", "glas", "b") matches zero rows, because websearch_to_tsquery
+// has no prefix operator for plain input and treats "brist" as the complete,
+// unstemmable lexeme "brist." strings.Contains, by contrast, matched every one
+// of those six against "Bristol"/"Harbor"/"Kelvin"/"Glasgow" — a
+// search-as-you-type false positive on what is a live search box. This is a
+// MEMBERSHIP difference, not merely a ranking one, and this package's own
+// ListStations doc comment and storetest/conformance.go's omissions note both
+// used to claim only ranking was left unimitated; both are corrected to say
+// membership.
+//
+// What whole-token matching does NOT close, and this function does not
+// attempt to: Postgres's websearch_to_tsquery additionally STEMS (e.g. a
+// search for "runs" matches a document containing "Running" — MEASURED),
+// treats multiple whitespace-separated search words as an implicit AND across
+// the whole document rather than requiring all of them inside one single
+// token, and parses its own quoting/OR/exclusion operators ("bristol or
+// glasgow", "-glasgow"). A search exercising any of those three families will
+// still disagree between this fake and Postgres; see ListStations's doc
+// comment for the fuller account before writing a test against any of them.
 func stationMatches(st store.Station, search string) bool {
 	if search == "" {
 		return true
@@ -858,8 +965,20 @@ func stationMatches(st store.Station, search string) bool {
 		return st.StationID == id
 	}
 	needle := strings.ToLower(search)
-	return strings.Contains(strings.ToLower(st.Name), needle) ||
-		strings.Contains(strings.ToLower(st.Location), needle)
+	return hasWholeWordToken(st.Name, needle) || hasWholeWordToken(st.Location, needle)
+}
+
+// hasWholeWordToken reports whether needle (already lowercased by the caller)
+// equals one whole, lowercased, whitespace-split token of s. See
+// stationMatches's doc comment for why this replaced a strings.Contains
+// substring test.
+func hasWholeWordToken(s, needle string) bool {
+	for _, token := range strings.Fields(strings.ToLower(s)) {
+		if token == needle {
+			return true
+		}
+	}
+	return false
 }
 
 // cloneRecord returns a copy of r whose pointer fields point to freshly

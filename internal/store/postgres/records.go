@@ -166,6 +166,33 @@ func clampLimit(n int) (limit int, ok bool) {
 	return n, true
 }
 
+// clampOffset is the SINGLE enforcement point, for the whole package, of a
+// rule interfaces.go's ListFilter.Offset and StationFilter.Offset doc
+// comments now state explicitly: a negative Offset is clamped to zero, never
+// left to reach Postgres's own OFFSET clause. OFFSET 0 already behaves this
+// way on its own, but a negative OFFSET raises a runtime error (SQLSTATE
+// 2201X, invalid_row_count_in_result_offset_clause, which classify maps to
+// ErrOperation) rather than being treated as "start from the top" — the same
+// class of gap clampLimit closes for a non-positive LIMIT, and reached the
+// same way: a caller building a page from an HTTP query string can send a
+// negative offset as easily as a negative limit, and interfaces.go used to
+// document a rule for one of that pair and not the other.
+//
+// Clamp-to-zero is the chosen semantic — it matches "the store is total",
+// exactly as clampLimit's "zero rows, never unbounded" does for a
+// non-positive limit — rather than rejecting the call with an error: List's
+// contract is to always answer, never to validate its filter.
+//
+// Both List methods in this package (RecordStore.List and
+// StationStore.listStations) now call this one function instead of passing
+// f.Offset straight through to a query argument.
+func clampOffset(n int) int {
+	if n < 0 {
+		return 0
+	}
+	return n
+}
+
 // ClaimPending implements store.RecordStore.
 //
 // ref is a parameter rather than a gen_random_uuid() call inside the SQL
@@ -432,8 +459,16 @@ func (s *RecordStore) Complete(ctx context.Context, txID string, pubs []store.Pu
 		out = stats
 		return nil
 	})
+	// classify wraps BeginFunc's own result, not just the closure's: BeginFunc
+	// returns its own Begin/Commit failure unclassified when the closure never
+	// even ran (e.g. the pool cannot acquire a connection to start the
+	// transaction at all), and that path carries raw driver text — including
+	// the DSN's user= and database= — that must never reach a caller. classify
+	// is idempotent, so re-classifying a value the closure already classified
+	// (e.g. store.ErrConflict from completeRecordsSQL) returns it unchanged
+	// rather than downgrading it to ErrOperation.
 	if err != nil {
-		return store.Stats{}, err
+		return store.Stats{}, classify(err)
 	}
 	return out, nil
 }
@@ -627,7 +662,19 @@ func (s *RecordStore) ReapExpired(ctx context.Context, lease time.Duration, limi
 // package's single enforcement point rather than an inline check here. The
 // clamp applies identically to both the DryRun count and the real write, so
 // neither path can disagree with the other about a non-positive limit.
+//
+// f.Status == StatusCompleted is refused before either path runs, for the
+// same reason and with the same (0, nil) semantic — see
+// RequeueFilter.Status's doc comment. requeueSQL and requeueCountSQL both
+// accept ANY status value as their $1 predicate, including 'completed', and
+// would otherwise un-publish a completed row back to pending without
+// reversing app_stats or the station counters Complete already advanced,
+// making the row re-claimable and letting a second Complete double-count one
+// reading.
 func (s *RecordStore) Requeue(ctx context.Context, f store.RequeueFilter) (int64, error) {
+	if f.Status == store.StatusCompleted {
+		return 0, nil
+	}
 	limit, ok := clampLimit(f.Limit)
 	if !ok {
 		return 0, nil
@@ -715,7 +762,7 @@ func (s *RecordStore) List(ctx context.Context, f store.ListFilter) ([]store.Rec
 	limit, ok := clampLimit(f.Limit)
 	recs := []store.Record{}
 	if ok {
-		rows, err := s.db.Query(ctx, listRecordsSQL, f.StationID, statusArg, limit, f.Offset)
+		rows, err := s.db.Query(ctx, listRecordsSQL, f.StationID, statusArg, limit, clampOffset(f.Offset))
 		if err != nil {
 			return nil, 0, classify(err)
 		}
@@ -887,7 +934,13 @@ func (s *RecordStore) SetBlockHeights(ctx context.Context, ups []store.BlockHeig
 	copy(sorted, ups)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].TxID < sorted[j].TxID })
 
-	return pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+	// classify wraps BeginFunc's own result here too, for the identical reason
+	// Complete does: BeginFunc's own Begin/Commit failure bypasses every
+	// classify call inside the closure, and this is the UNAUTHENTICATED verify
+	// path — reachable with no login at all — so a raw connect failure
+	// leaking the DSN's user= and database= here is the worse place for this
+	// gap to exist, not a lesser one.
+	return classify(pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		for _, u := range sorted {
 			if _, err := tx.Exec(ctx, setBlockHeightSQL, u.TxID, u.BlockHeight, u.MinedAt); err != nil {
 				return classify(err)
@@ -897,7 +950,7 @@ func (s *RecordStore) SetBlockHeights(ctx context.Context, ups []store.BlockHeig
 			}
 		}
 		return nil
-	})
+	}))
 }
 
 // ReconcileCandidates implements store.RecordStore.

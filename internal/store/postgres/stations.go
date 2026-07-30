@@ -167,7 +167,8 @@ func (s *StationStore) List(ctx context.Context, f store.StationFilter) ([]store
 // short-circuit the whole method: interfaces.go requires Total to still
 // report the full unpaged count of matching rows even when the page is empty,
 // so the count query always runs against the same prefixArgs, independent of
-// whether the page query ran at all.
+// whether the page query ran at all. f.Offset is likewise clamped by
+// clampOffset — see its doc comment in records.go.
 func (s *StationStore) listStations(
 	ctx context.Context,
 	listStmt, countStmt string,
@@ -179,7 +180,7 @@ func (s *StationStore) listStations(
 	if ok {
 		listArgs := make([]any, 0, len(prefixArgs)+2)
 		listArgs = append(listArgs, prefixArgs...)
-		listArgs = append(listArgs, limit, f.Offset)
+		listArgs = append(listArgs, limit, clampOffset(f.Offset))
 
 		rows, err := s.db.Query(ctx, listStmt, listArgs...)
 		if err != nil {

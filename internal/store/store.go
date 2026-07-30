@@ -220,7 +220,16 @@ type ListFilter struct {
 	StationID *int64
 	Status    *Status
 	Limit     int
-	Offset    int
+
+	// Offset is the sibling parameter to Limit on the same page, and carries
+	// the identical clamping rule: a NEGATIVE Offset is clamped to zero,
+	// exactly as a non-positive Limit is clamped to "zero rows," rather than
+	// being treated as an error or passed through to the database. SQL's own
+	// OFFSET clause returns every row for Offset 0 with no error on its own,
+	// but raises a runtime error for a negative value (SQLSTATE 2201X), so
+	// every implementation clamps Offset < 0 to 0 in Go before any query is
+	// built or sent, the same way it clamps a non-positive Limit.
+	Offset int
 }
 
 // StationFilter is the station list query. Search is already trimmed by the
@@ -228,6 +237,10 @@ type ListFilter struct {
 type StationFilter struct {
 	Search string
 	Limit  int
+
+	// Offset carries the same clamping rule as ListFilter.Offset: a negative
+	// value is clamped to zero by every implementation, never left to reach
+	// the database or treated as an error.
 	Offset int
 }
 
@@ -251,6 +264,19 @@ type BlockHeightUpdate struct {
 // RequeueFilter is the operator-driven bulk requeue. DryRun counts without
 // writing.
 type RequeueFilter struct {
+	// Status selects which rows are eligible. The design documents requeue as
+	// an operator tool for `--status failed`, and StatusCompleted is a
+	// STATE-MACHINE HOLE rather than a legitimate filter value: a completed
+	// row already advanced app_stats and the station counters in Complete's
+	// one transaction, and Requeue has no path that reverses either. Every
+	// implementation therefore refuses Status: StatusCompleted outright —
+	// returning (0, nil), for both DryRun and the real write, before either
+	// path runs — rather than un-publishing the row and making it
+	// re-claimable, which would let a second Complete double-count the same
+	// reading. (0, nil) rather than an error is the chosen semantic, matching
+	// the "the store is total" answer a non-positive Limit already gets
+	// elsewhere in this same method: a caller's malformed filter value is
+	// reported as "nothing to do," not as an exception.
 	Status    Status
 	Since     time.Duration
 	StationID *int64

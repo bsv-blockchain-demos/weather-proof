@@ -55,6 +55,29 @@ func classify(err error) error {
 	if err == nil {
 		return nil
 	}
+	// IDEMPOTENT, and deliberately checked first. Complete and
+	// SetBlockHeights each run inside pgx.BeginFunc, whose own Begin/Commit
+	// failure is a SECOND path a raw driver error can reach a caller through
+	// — distinct from every statement error already classified inside the
+	// closure — so both methods must additionally wrap whatever BeginFunc
+	// itself returns. But the closure's own statement errors already went
+	// through classify once (e.g. store.ErrConflict wrapped with a SQLSTATE
+	// suffix) before BeginFunc hands that same value back to its caller as
+	// its return value, and a plain, non-idempotent classify would then
+	// process that value a SECOND time. None of this function's wrapped
+	// return values re-embeds a *pgconn.PgError in their chain — the
+	// SQLSTATE travels as a %s-formatted string, not a wrapped error — so a
+	// second pass would fail the errors.As(err, &pgErr) check below and fall
+	// through to the opaque default, DOWNGRADING an already-classified
+	// store.ErrNotFound or store.ErrConflict, or an already-classified
+	// ErrTransient, into a bare ErrOperation. Guarding here — return
+	// unchanged if err already belongs to this package's (or store's)
+	// classified vocabulary — is what makes wrapping BeginFunc's result safe
+	// rather than a silent regression.
+	if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrConflict) ||
+		errors.Is(err, ErrOperation) || errors.Is(err, ErrTransient) {
+		return err
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.ErrNotFound
 	}

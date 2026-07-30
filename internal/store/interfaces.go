@@ -58,7 +58,9 @@ type RecordStore interface {
 	ReapExpired(ctx context.Context, lease time.Duration, limit int) ([]Record, error)
 
 	// Requeue is the operator-driven bulk requeue. It returns the affected
-	// count and writes nothing when f.DryRun is true.
+	// count and writes nothing when f.DryRun is true. f.Status ==
+	// StatusCompleted is refused outright — see RequeueFilter.Status's doc
+	// comment — rather than un-publishing an already-completed row.
 	Requeue(ctx context.Context, f RequeueFilter) (int64, error)
 
 	// List returns one page of records newest-first plus the unpaged total.
@@ -77,6 +79,11 @@ type RecordStore interface {
 	// raises a runtime error for a negative n, so an implementation clamps at
 	// this boundary rather than letting either behavior leak through as a
 	// driver error.
+	//
+	// A negative Offset is clamped to zero — see ListFilter.Offset's doc
+	// comment — the same rule as Limit, for the same reason: SQL's own OFFSET
+	// clause raises a runtime error for a negative value rather than treating
+	// it as "start from the top."
 	List(ctx context.Context, f ListFilter) ([]Record, int64, error)
 
 	// Get returns one record, or ErrNotFound.
@@ -114,7 +121,8 @@ type StationStore interface {
 	//
 	// As with RecordStore.List, a Limit of zero or negative returns zero rows
 	// rather than being treated as unbounded, and Total still reports the full
-	// unpaged count of matching rows.
+	// unpaged count of matching rows. A negative Offset is likewise clamped to
+	// zero — see StationFilter.Offset's doc comment.
 	List(ctx context.Context, f StationFilter) ([]Station, int64, error)
 
 	// Get returns one station, or ErrNotFound.
