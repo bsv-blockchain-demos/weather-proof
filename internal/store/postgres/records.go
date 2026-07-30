@@ -808,3 +808,115 @@ func (s *RecordStore) Snapshot(ctx context.Context) (store.Snapshot, error) {
 	}
 	return out, nil
 }
+
+// setBlockHeightSQL refreshes the mined height of every record sharing a txid.
+//
+// `AND status = 'completed'` is what stops an aborted row (which can carry a
+// txid) being reported as mined. mined_at falls back to now() when the caller
+// has no upstream timestamp.
+const setBlockHeightSQL = `
+UPDATE weather_records
+   SET block_height = $2,
+       chain_status = 'mined',
+       mined_at     = coalesce($3::timestamptz, now())
+ WHERE txid = $1 AND status = 'completed'`
+
+// setStationHeightSQL mirrors the height onto every station that has a record
+// in this transaction. greatest(...) means a later confirmation for an OLDER
+// transaction can never lower a station's displayed height.
+//
+// `AND r.status = 'completed'` in the subquery, for the SAME reason
+// setBlockHeightSQL carries it, and its absence was a real hole rather than a
+// theoretical one: an aborted row keeps its txid, so without the filter a txid
+// that exists ONLY on aborted or failed rows still raised that station's
+// displayed last_block_height — on the unauthenticated verify path, where the
+// caller chooses the txids. The record filter alone was not enough because the
+// two statements select their targets independently.
+const setStationHeightSQL = `
+UPDATE stations AS s
+   SET last_block_height = greatest(coalesce(s.last_block_height, $2), $2),
+       updated_at        = now()
+ WHERE s.station_id IN (
+         SELECT r.station_id FROM weather_records AS r
+          WHERE r.txid = $1 AND r.status = 'completed'
+       )`
+
+// reconcileCandidatesSQL finds completed rows that are not yet known mined.
+// The partial index ix_records_reconcile serves it.
+//
+// `, id ASC` for the third and last time in this file, and the premise is
+// identical: completeRecordsSQL sets `processed_at = now()` for a whole batch in
+// one statement, so every row published together shares one processed_at to the
+// microsecond. Without the tiebreaker `LIMIT $2` takes an unspecified subset of
+// a tied batch, so two reconciler ticks can keep re-reading the same rows while
+// others in the same batch are never looked at.
+const reconcileCandidatesSQL = `
+SELECT ` + recordColumns + `
+  FROM weather_records
+ WHERE status = 'completed'
+   AND (chain_status IS NULL OR chain_status <> 'mined')
+   AND processed_at < now() - $1::interval
+ ORDER BY processed_at ASC, id ASC
+ LIMIT $2`
+
+// SetBlockHeights implements store.RecordStore.
+//
+// Both tables move in ONE transaction. The atomicity requirement transfers from
+// the Mongo session the TypeScript used on this path; the mechanism does not.
+//
+// SECURITY INVARIANT, and it is the whole reason this endpoint can be
+// unauthenticated: an HTTP caller supplies only txids. The BlockHeight in every
+// update is assigned from a block explorer's response by the verify handler,
+// and the request DTO has no height field. Do not add one.
+//
+// ups is sorted by TxID before either statement runs, on top of what the design
+// spelled out: Task 8's review measured that a writer touching rows in a
+// DIFFERENT order than a concurrent writer deadlocks even under SKIP LOCKED
+// (184 vs a 35-deadlock bare-FOR-UPDATE baseline; 33 vs 35 even with SKIP
+// LOCKED against a differently-ordered concurrent writer). Each loop iteration
+// below issues two multi-row UPDATEs keyed off u.TxID, so two overlapping
+// SetBlockHeights calls supplying the same txids in different orders are
+// exactly that shape. The caller's slice is left untouched — sorted is a copy
+// — matching Complete's pubs and classifierWrite's ids, since interfaces.go
+// makes no promise that SetBlockHeights may reorder its argument.
+func (s *RecordStore) SetBlockHeights(ctx context.Context, ups []store.BlockHeightUpdate) error {
+	if len(ups) == 0 {
+		return nil
+	}
+	sorted := make([]store.BlockHeightUpdate, len(ups))
+	copy(sorted, ups)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].TxID < sorted[j].TxID })
+
+	return pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		for _, u := range sorted {
+			if _, err := tx.Exec(ctx, setBlockHeightSQL, u.TxID, u.BlockHeight, u.MinedAt); err != nil {
+				return classify(err)
+			}
+			if _, err := tx.Exec(ctx, setStationHeightSQL, u.TxID, u.BlockHeight); err != nil {
+				return classify(err)
+			}
+		}
+		return nil
+	})
+}
+
+// ReconcileCandidates implements store.RecordStore.
+//
+// limit is clamped by clampLimit — see its doc comment for why this is the
+// package's single enforcement point rather than an inline check here.
+// ReconcileCandidates has no separate Total to preserve (unlike List and
+// ListStations), so a clamped limit short-circuits the whole method exactly as
+// ClaimPending and ReapExpired do, rather than still running an unpaged count.
+func (s *RecordStore) ReconcileCandidates(
+	ctx context.Context, olderThan time.Duration, limit int,
+) ([]store.Record, error) {
+	limit, ok := clampLimit(limit)
+	if !ok {
+		return []store.Record{}, nil
+	}
+	rows, err := s.db.Query(ctx, reconcileCandidatesSQL, intervalArg(olderThan), limit)
+	if err != nil {
+		return nil, classify(err)
+	}
+	return collectRecords(rows)
+}
