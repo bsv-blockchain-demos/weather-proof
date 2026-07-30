@@ -393,3 +393,154 @@ func TestCompleteRollsBackWhollyOnFailure(t *testing.T) {
 		t.Fatalf("retried Complete stats = %+v, want TotalTx 1 TotalRecords 3", stats)
 	}
 }
+
+// TestCompleteStationBumpIgnoresAnOlderReading is one half of the fixture
+// mutation testing demanded: a fresh station (last_reading IS NULL) can never
+// discriminate bumpStationsSQL's "newer reading only" CASE guard from an
+// unconditional assignment, because the IS NULL branch fires either way. This
+// test starts the station with a last_reading that is ALREADY NEWER than the
+// batch being completed, and with last_temp/last_conditions values that are
+// deliberately different from what the (older) batch would write — so an
+// assignment that fires when it should not is directly observable, not merely
+// "some write happened."
+//
+// last_reading and tx_records are asserted too, on the SQL's own terms: the
+// counter is unconditional (it must still move), and last_reading's
+// greatest(...) must still hold the EXISTING, newer value rather than being
+// dragged backward by an older batch — that expression has the identical
+// fresh-station vacuity as the temp/conditions guard, and this fixture closes
+// it as the same byproduct.
+func TestCompleteStationBumpIgnoresAnOlderReading(t *testing.T) {
+	pool := storetest.Fresh(t, storeSchema)
+	ctx := context.Background()
+	rs := postgres.NewRecordStore(pool)
+
+	existingReading := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	olderBatchReading := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
+
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO stations (station_id, is_active, tx_records, last_reading, last_temp, last_conditions)
+		VALUES (1000, true, 5, $1, 99, 'PreExisting')`, existingReading); err != nil {
+		t.Fatalf("seeding station: %v", err)
+	}
+
+	id := uuid.Must(uuid.NewV7()).String()
+	data := fullWeatherData()
+	data.AirTemperature = 5
+	data.Conditions = "OlderCondition"
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO weather_records (id, station_id, timestamp, observation_time, data)
+		VALUES ($1, 1000, $2, $2, $3)`, id, olderBatchReading, data); err != nil {
+		t.Fatalf("seeding record: %v", err)
+	}
+
+	claimed, err := rs.ClaimPending(ctx, 1, uuid.Must(uuid.NewV7()))
+	if err != nil {
+		t.Fatalf("ClaimPending: %v", err)
+	}
+	if len(claimed) != 1 {
+		t.Fatalf("claimed %d rows, want 1", len(claimed))
+	}
+	pubs := []store.Publication{{RecordID: claimed[0].ID, OutputIndex: 0}}
+	if _, completeErr := rs.Complete(ctx, "older-batch", pubs); completeErr != nil {
+		t.Fatalf("Complete: %v", completeErr)
+	}
+
+	var txRecords int64
+	var lastTemp float64
+	var lastConditions string
+	var lastReading time.Time
+	if readErr := pool.QueryRow(ctx, `
+		SELECT tx_records, last_temp, last_conditions, last_reading
+		  FROM stations WHERE station_id = 1000`).
+		Scan(&txRecords, &lastTemp, &lastConditions, &lastReading); readErr != nil {
+		t.Fatalf("reading station: %v", readErr)
+	}
+
+	// The counter is unconditional and must still move.
+	if txRecords != 6 {
+		t.Errorf("tx_records = %d, want 6 (5 pre-existing + 1)", txRecords)
+	}
+	// The batch is OLDER than what the station already has, so none of these
+	// three may change. A guard stuck "always assign" would report 5 and
+	// "OlderCondition" here; a last_reading expression that dropped
+	// greatest(...) would report olderBatchReading here.
+	if lastTemp != 99 {
+		t.Errorf("last_temp = %v, want 99 (unchanged: the batch is older)", lastTemp)
+	}
+	if lastConditions != "PreExisting" {
+		t.Errorf("last_conditions = %q, want PreExisting (unchanged: the batch is older)", lastConditions)
+	}
+	if !lastReading.Equal(existingReading) {
+		t.Errorf("last_reading = %v, want the untouched existing %v", lastReading, existingReading)
+	}
+}
+
+// TestCompleteStationBumpAdoptsANewerReading is the mirror of
+// TestCompleteStationBumpIgnoresAnOlderReading: without it, a guard that got
+// stuck NEVER firing (e.g. an inverted comparison) would pass every other test
+// in this file, since it too would leave last_temp/last_conditions unchanged —
+// which happens to be what several other fixtures already expect from a fresh
+// station. This is the direction that requires the fields to actually move.
+func TestCompleteStationBumpAdoptsANewerReading(t *testing.T) {
+	pool := storetest.Fresh(t, storeSchema)
+	ctx := context.Background()
+	rs := postgres.NewRecordStore(pool)
+
+	existingReading := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	newerBatchReading := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO stations (station_id, is_active, tx_records, last_reading, last_temp, last_conditions)
+		VALUES (1000, true, 3, $1, 1, 'Stale')`, existingReading); err != nil {
+		t.Fatalf("seeding station: %v", err)
+	}
+
+	id := uuid.Must(uuid.NewV7()).String()
+	data := fullWeatherData()
+	data.AirTemperature = 77
+	data.Conditions = "Fresh"
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO weather_records (id, station_id, timestamp, observation_time, data)
+		VALUES ($1, 1000, $2, $2, $3)`, id, newerBatchReading, data); err != nil {
+		t.Fatalf("seeding record: %v", err)
+	}
+
+	claimed, err := rs.ClaimPending(ctx, 1, uuid.Must(uuid.NewV7()))
+	if err != nil {
+		t.Fatalf("ClaimPending: %v", err)
+	}
+	if len(claimed) != 1 {
+		t.Fatalf("claimed %d rows, want 1", len(claimed))
+	}
+	pubs := []store.Publication{{RecordID: claimed[0].ID, OutputIndex: 0}}
+	if _, completeErr := rs.Complete(ctx, "newer-batch", pubs); completeErr != nil {
+		t.Fatalf("Complete: %v", completeErr)
+	}
+
+	var txRecords int64
+	var lastTemp float64
+	var lastConditions string
+	var lastReading time.Time
+	if readErr := pool.QueryRow(ctx, `
+		SELECT tx_records, last_temp, last_conditions, last_reading
+		  FROM stations WHERE station_id = 1000`).
+		Scan(&txRecords, &lastTemp, &lastConditions, &lastReading); readErr != nil {
+		t.Fatalf("reading station: %v", readErr)
+	}
+
+	if txRecords != 4 {
+		t.Errorf("tx_records = %d, want 4 (3 pre-existing + 1)", txRecords)
+	}
+	// The batch is NEWER than what the station already has, so all three must
+	// move to the batch's values.
+	if lastTemp != 77 {
+		t.Errorf("last_temp = %v, want 77 (the batch is newer and must win)", lastTemp)
+	}
+	if lastConditions != "Fresh" {
+		t.Errorf("last_conditions = %q, want Fresh (the batch is newer and must win)", lastConditions)
+	}
+	if !lastReading.Equal(newerBatchReading) {
+		t.Errorf("last_reading = %v, want the newer batch reading %v", lastReading, newerBatchReading)
+	}
+}
