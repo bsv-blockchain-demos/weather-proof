@@ -28,14 +28,10 @@ type RecordStore interface {
 	//
 	// A non-positive n returns zero rows with a NIL error — the same rule
 	// List's Limit uses, and never treated as unbounded. SQL's own LIMIT $n
-	// already behaves this way for n == 0; a negative n is where the two
-	// shipped implementations currently disagree, and that is a recorded,
-	// deliberate gap rather than an oversight: the fake clamps a negative n to
-	// this same "zero rows, nil error" rule for consistency with List, while
-	// Postgres's LIMIT rejects a negative value as a runtime error (SQLSTATE
-	// 2201W, classified to ErrOperation) that a caller must not rely on.
-	// Task 19's conformance suite must not assert n < 0 across both
-	// implementations until that gap is closed.
+	// already behaves this way for n == 0 but rejects a negative value with a
+	// runtime error, so every implementation clamps n <= 0 in Go before any
+	// query is built or sent, rather than let a caller's behavior depend on
+	// which implementation is wired in.
 	ClaimPending(ctx context.Context, n int, ref uuid.UUID) ([]Record, error)
 
 	// Complete marks the given publications completed under one txid and

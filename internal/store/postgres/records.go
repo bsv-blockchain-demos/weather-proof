@@ -119,7 +119,23 @@ RETURNING ` + recordColumnsAliased
 // label the adopt design uses as its idempotency key would not exist.
 // Measured: the inline form produced 21 distinct refs for 21 rows; this form
 // produces exactly 1.
+//
+// n <= 0 is clamped HERE, in Go, before claimSQL is ever built or sent —
+// never left to Postgres's own LIMIT to decide. LIMIT 0 already returns zero
+// rows with no error, but a negative LIMIT raises a runtime error (SQLSTATE
+// 2201W, classified below to ErrOperation), and interfaces.go's ClaimPending
+// doc states one rule for every implementation: zero rows, nil error, never
+// unbounded. Leaving that to the driver would make a caller's behavior
+// depend on which implementation is wired in, which is exactly what a frozen
+// interface exists to prevent. []store.Record{} rather than nil matches what
+// pgx.CollectRows itself returns for a genuine zero-row result — CollectRows
+// is AppendRows([]T{}, ...), so a real "nothing pending" result is also a
+// non-nil empty slice — meaning a caller cannot distinguish "clamped" from
+// "nothing was pending" by nil-ness either way.
 func (s *RecordStore) ClaimPending(ctx context.Context, n int, ref uuid.UUID) ([]store.Record, error) {
+	if n <= 0 {
+		return []store.Record{}, nil
+	}
 	rows, err := s.db.Query(ctx, claimSQL, n, ref)
 	if err != nil {
 		return nil, classify(err)

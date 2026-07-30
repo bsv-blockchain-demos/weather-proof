@@ -454,3 +454,51 @@ func TestClaimPendingOnAnEmptyQueueReturnsNoRows(t *testing.T) {
 		t.Fatalf("claimed %d rows from an empty queue", len(recs))
 	}
 }
+
+// TestClaimPendingNonPositiveNNeverTouchesTheDatabase is the regression gate
+// on interfaces.go's unconditional ClaimPending rule: n <= 0 returns zero
+// rows and a NIL error, with no exception for a negative n. Both n == 0 and
+// n == -1 must return a non-nil, empty slice — matching pgx.CollectRows's own
+// zero-row shape (CollectRows is AppendRows([]T{}, ...), never nil) so a
+// caller cannot distinguish "clamped" from "nothing was pending" by
+// nil-ness.
+//
+// The already-canceled context is what proves the guard fires BEFORE any
+// query is built or sent, not merely that it produces the right answer by
+// coincidence: if ClaimPending instead reached the database for a
+// non-positive n, a canceled context would surface as a non-nil error here
+// (context.Canceled for a query that never got past connection acquisition,
+// or — if the guard were cosmetic and the raw LIMIT still executed for the
+// negative case — the SQLSTATE 2201W this package classifies to
+// ErrOperation). A nil error is only possible if the guard returned before
+// ctx was ever consulted.
+func TestClaimPendingNonPositiveNNeverTouchesTheDatabase(t *testing.T) {
+	pool := storetest.Fresh(t, storeSchema)
+	seedPending(t, pool, 3, 1000)
+	rs := postgres.NewRecordStore(pool)
+
+	for _, n := range []int{0, -1} {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		recs, err := rs.ClaimPending(ctx, n, uuid.Must(uuid.NewV7()))
+		if err != nil {
+			t.Fatalf("ClaimPending(n=%d) with an already-canceled context: err = %v, want nil", n, err)
+		}
+		if recs == nil {
+			t.Fatalf("ClaimPending(n=%d) returned a nil slice, want a non-nil empty slice", n)
+		}
+		if len(recs) != 0 {
+			t.Fatalf("ClaimPending(n=%d) claimed %d rows, want 0", n, len(recs))
+		}
+	}
+
+	// The three seeded rows must be entirely untouched by either call.
+	var pending int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM weather_records WHERE status = 'pending'").Scan(&pending); err != nil {
+		t.Fatalf("counting pending: %v", err)
+	}
+	if pending != 3 {
+		t.Fatalf("pending rows = %d after two non-positive-n claims, want 3 (untouched)", pending)
+	}
+}

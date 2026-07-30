@@ -168,17 +168,12 @@ func (s *Store) Insert(_ context.Context, r store.NewRecord) (bool, error) {
 // ClaimPending implements store.RecordStore.
 //
 // n <= 0 returns zero rows with a nil error, matching List's Limit<=0 rule
-// (see interfaces.go) rather than either of the two things a naive port of
-// `make([]store.Record, 0, n)` would do: PANIC for n < 0 (cap out of range),
-// or — if only the make were guarded — claim EVERY pending row, because
-// `len(out) == n` can never be true for a negative n. Both are worse than
-// Postgres's own real behavior: `LIMIT $1` with $1 = 0 already returns zero
-// rows with no error, but with a negative $1 it raises a runtime error
-// (SQLSTATE 2201W, classified to ErrOperation) that this fake cannot mirror
-// without inventing a new cross-package error the postgres implementation
-// does not (yet) produce for this exact case either — see interfaces.go's
-// ClaimPending doc and this task's report for why clamping was chosen over
-// mirroring.
+// (see interfaces.go) and matching what postgres.RecordStore.ClaimPending
+// clamps to as well: both implementations guard n before doing any work,
+// rather than either of the two things a naive port of
+// `make([]store.Record, 0, n)` would do here: PANIC for n < 0 (cap out of
+// range), or — if only the make were guarded — claim EVERY pending row,
+// because `len(out) == n` can never be true for a negative n.
 func (s *Store) ClaimPending(_ context.Context, n int, ref uuid.UUID) ([]store.Record, error) {
 	if s.FailAll != nil {
 		return nil, s.FailAll
