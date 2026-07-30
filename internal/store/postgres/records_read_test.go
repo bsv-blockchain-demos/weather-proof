@@ -216,6 +216,58 @@ func TestListOnAnEmptyTableAndPastTheEnd(t *testing.T) {
 	}
 }
 
+// TestListNonPositiveLimitReturnsZeroRowsButTheFullTotal is the regression
+// gate on List's own half of clampLimit. It is a DIFFERENT shape from
+// ClaimPending/ReapExpired/Requeue's "NeverTouchesTheDatabase" tests: List
+// does NOT skip the whole method when the limit clamps, because Override 2
+// of the frozen List contract requires Total to still report the full
+// unpaged count of matching rows even when the page is empty. So this test
+// pins BOTH halves in one assertion per Limit value: a non-positive Limit
+// returns zero rows, a NIL error, AND the correct (non-zero, exactly known)
+// Total — never a Total silently zeroed alongside the page.
+//
+// Rows that MATCH the filter are seeded first, deliberately, so Total has a
+// non-zero count to report: a fixture where the true Total is 0 anyway could
+// not distinguish "Total was still computed" from "Total was zeroed by the
+// clamp" — the same vacuity trap this project has hit repeatedly.
+//
+// Both Limit: 0 and Limit: -1 are asserted, and not just one, because they
+// discriminate DIFFERENT failures if clampLimit is ever bypassed. Limit: 0
+// already behaves correctly even with NO Go-side clamp at all, because
+// Postgres's own `LIMIT 0` returns zero rows with no error on its own — it
+// cannot, by itself, prove the guard fired rather than merely coincided with
+// Postgres's default behavior. Limit: -1 is what actually discriminates a
+// bypassed clamp: an unclamped negative LIMIT reaching Postgres raises
+// SQLSTATE 2201W (invalid_row_count_in_limit_clause), which classify maps to
+// a non-nil ErrOperation — so only Limit: -1 proves the clamp is what keeps
+// this path error-free rather than Postgres's own leniency at zero.
+func TestListNonPositiveLimitReturnsZeroRowsButTheFullTotal(t *testing.T) {
+	pool := storetest.Fresh(t, storeSchema)
+	ctx := context.Background()
+	rs := postgres.NewRecordStore(pool)
+
+	seedPending(t, pool, 5, 1000)
+
+	for _, limit := range []int{0, -1} {
+		recs, total, err := rs.List(ctx, store.ListFilter{Limit: limit})
+		if err != nil {
+			t.Fatalf("List(Limit=%d): err = %v, want nil", limit, err)
+		}
+		if recs == nil {
+			t.Fatalf("List(Limit=%d) returned a nil slice, want a non-nil empty slice"+
+				" (a caller must not be able to tell \"clamped\" from \"nothing matched\""+
+				" by nil-ness)", limit)
+		}
+		if len(recs) != 0 {
+			t.Fatalf("List(Limit=%d) returned %d rows, want 0", limit, len(recs))
+		}
+		if total != 5 {
+			t.Fatalf("List(Limit=%d) total = %d, want 5 (Total must still report the"+
+				" full matching count, not the clamped page length)", limit, total)
+		}
+	}
+}
+
 func TestGetRoundTripsEverySchemaField(t *testing.T) {
 	pool := storetest.Fresh(t, storeSchema)
 	ctx := context.Background()
