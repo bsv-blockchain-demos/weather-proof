@@ -12,15 +12,20 @@ import (
 // since classify is unexported).
 //
 // It exists because driving classify's context.Canceled branch through a
-// real Insert call with an already-canceled context — see
-// TestClassifierRejectsAnAlreadyCanceledContext in records_insert_test.go —
-// is NOT sufficient on its own: measured against the real driver, an
-// already-canceled context reaching pgx synchronously (before any query is
-// sent) already returns the bare context.Canceled sentinel with nothing
-// attached, so a mutation that makes classify return err UNCHANGED in that
-// branch is observationally identical to the fix and the black-box test
-// cannot tell them apart. Confirmed by deliberately introducing that exact
-// mutation in a scratch copy: the black-box test still passed.
+// real Insert call with an already-canceled context is NOT sufficient on its
+// own: measured against the real driver, an already-canceled context
+// reaching pgx synchronously (before any query is sent) already returns the
+// bare context.Canceled sentinel with nothing attached, so a mutation that
+// makes classify return err UNCHANGED in that branch is observationally
+// identical to the fix and such a black-box test cannot tell them apart.
+// Confirmed by deliberately introducing that exact mutation in a scratch
+// copy: a black-box test doing exactly this
+// (TestClassifierRejectsAnAlreadyCanceledContext, added at Task 7) still
+// passed; it and its TestClassifierRejectsAnExpiredDeadline counterpart were
+// deleted at Task 17 as redundant against this test. See
+// records_insert_test.go's note at the same location for the full account,
+// including the one flake that made deletion, rather than a further
+// hardening pass, the right call.
 //
 // The real leak this branch guards against is documented on classify itself:
 // a pgxpool connection acquire racing a context cancellation can produce a
