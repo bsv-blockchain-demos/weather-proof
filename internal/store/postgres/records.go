@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -470,4 +471,118 @@ func (s *RecordStore) classifierWrite(ctx context.Context, stmt string, ids []st
 		return classify(err)
 	}
 	return nil
+}
+
+// reapExpiredSQL reclaims rows stranded in processing past the lease.
+//
+// SKIP LOCKED here too, so a reap tick never blocks behind a live claim or a
+// Complete. attempts is NOT touched: only a permanent error spends the budget.
+// claim_ref is PRESERVED and claimed_at is deliberately LEFT SET — claimed_at
+// is the ops timeline evidence, and adopt_required is the distinguishing
+// signal:
+//
+//	pending,   adopt_required=true,  claim_ref NOT NULL -> REAPED, adopt-check first
+//	pending,   adopt_required=false, claim_ref IS NULL  -> never claimed, publish fresh
+//	processing, claimed_at within lease                 -> untouched
+//
+// Both the reaper and the error classifier converge on this same transition, so
+// neither is dead code: the classifier writes it when it knows the outcome is
+// ambiguous (resolved in seconds), and the reaper is the backstop for the
+// process dying before that write landed (resolved after the lease).
+//
+// The ck_records_processing_leased CHECK is what makes the
+// `claimed_at < now() - lease` predicate TOTAL, so no defensive
+// `OR claimed_at IS NULL` is needed.
+//
+// `, c.id ASC` for the same reason claimSQL carries it, and the reasoning is
+// NOT weaker here: claimSQL sets `claimed_at = now()` for every row it touches
+// in one statement, and now() is transaction_timestamp(), so an entire claimed
+// batch shares one claimed_at to the microsecond. `ORDER BY c.claimed_at ASC`
+// alone is therefore a non-total order over exactly the rows the reaper looks
+// at, and `LIMIT` over a non-total order selects an unspecified subset — so two
+// successive limited reaps could return overlapping sets and leave part of the
+// batch stranded for another lease.
+const reapExpiredSQL = `
+UPDATE weather_records AS r
+   SET status = 'pending', adopt_required = true
+ WHERE r.id IN (
+         SELECT c.id
+           FROM weather_records AS c
+          WHERE c.status = 'processing'
+            AND c.claimed_at < now() - $1::interval
+          ORDER BY c.claimed_at ASC, c.id ASC
+          LIMIT $2
+            FOR UPDATE SKIP LOCKED
+       )
+RETURNING ` + recordColumnsAliased
+
+// requeueCountSQL is the DryRun half of Requeue: the identical predicate with
+// no write, so a dry run can never disagree with the real thing about which
+// rows it would touch.
+const requeueCountSQL = `
+SELECT count(*) FROM (
+  SELECT c.id
+    FROM weather_records AS c
+   WHERE c.status = $1
+     AND c.created_at < now() - $2::interval
+     AND ($3::bigint IS NULL OR c.station_id = $3)
+   ORDER BY c.created_at ASC, c.id ASC
+   LIMIT $4
+) AS t`
+
+// requeueSQL is the operator-driven bulk requeue.
+//
+// adopt_required is set for the same reason the reaper sets it: a requeued row
+// may already have been published by a prior batch, and preserving claim_ref
+// without the flag would run no adopt check at all. attempts is NOT reset —
+// an operator requeue is not an amnesty on the budget.
+const requeueSQL = `
+UPDATE weather_records AS r
+   SET status = 'pending', adopt_required = true, error = 'requeued by operator'
+ WHERE r.id IN (
+         SELECT c.id
+           FROM weather_records AS c
+          WHERE c.status = $1
+            AND c.created_at < now() - $2::interval
+            AND ($3::bigint IS NULL OR c.station_id = $3)
+          ORDER BY c.created_at ASC, c.id ASC
+          LIMIT $4
+            FOR UPDATE SKIP LOCKED
+       )`
+
+// intervalArg renders d for a $n::interval bind parameter.
+//
+// This builds a VALUE, not SQL text: the statements above are constants and d
+// travels as a parameter through the extended protocol. Microseconds is the
+// finest unit a Postgres interval carries, so no precision is lost.
+func intervalArg(d time.Duration) string {
+	return strconv.FormatInt(d.Microseconds(), 10) + " microseconds"
+}
+
+// ReapExpired implements store.RecordStore.
+func (s *RecordStore) ReapExpired(ctx context.Context, lease time.Duration, limit int) ([]store.Record, error) {
+	rows, err := s.db.Query(ctx, reapExpiredSQL, intervalArg(lease), limit)
+	if err != nil {
+		return nil, classify(err)
+	}
+	return collectRecords(rows)
+}
+
+// Requeue implements store.RecordStore.
+func (s *RecordStore) Requeue(ctx context.Context, f store.RequeueFilter) (int64, error) {
+	if f.DryRun {
+		var n int64
+		err := s.db.QueryRow(ctx, requeueCountSQL,
+			string(f.Status), intervalArg(f.Since), f.StationID, f.Limit).Scan(&n)
+		if err != nil {
+			return 0, classify(err)
+		}
+		return n, nil
+	}
+	ct, err := s.db.Exec(ctx, requeueSQL,
+		string(f.Status), intervalArg(f.Since), f.StationID, f.Limit)
+	if err != nil {
+		return 0, classify(err)
+	}
+	return ct.RowsAffected(), nil
 }
