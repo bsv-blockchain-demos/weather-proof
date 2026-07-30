@@ -280,3 +280,22 @@ func Pool(t testing.TB, schema Schema, maxConns int32) *pgxpool.Pool {
 	}
 	return pool
 }
+
+// freshMaxConns is the pool size Fresh hands out. It must stay above the
+// goroutine count of every concurrency test in the tree, because a pool
+// smaller than the worker count serializes the race and turns the test into a
+// vacuous pass.
+const freshMaxConns = 16
+
+// Fresh returns a migrated, empty database in schema's private namespace.
+//
+// Every Postgres test should start here rather than at Pool: the only tests
+// that want an unmigrated schema are the migration tests themselves.
+func Fresh(t testing.TB, schema Schema) *pgxpool.Pool {
+	t.Helper()
+	pool := Pool(t, schema, freshMaxConns)
+	if err := postgres.Migrate(context.Background(), pool); err != nil {
+		t.Fatalf("storetest.Fresh: %v", err)
+	}
+	return pool
+}
