@@ -290,6 +290,14 @@ func TestAdversarialInputReachesNoSQLText(t *testing.T) {
 	// (SQLSTATE 22021 at bind time, measured). Before that screen existed, these
 	// three assertions failed on this single payload and the honest reading was not
 	// "weaken the assertion" but "the search box really does 500 on %00".
+	//
+	// "\xff" is in this table for the SAME reason as "\x00" but proves the OTHER
+	// half of store.ValidText: NUL is itself valid UTF-8 (utf8.ValidString("\x00")
+	// is true), so the NUL check and the malformed-UTF-8 check are two
+	// independent guards and either one being removed leaves a distinct hole. A
+	// lone 0xff byte is malformed UTF-8 but contains no NUL, so it only exercises
+	// (and only fails to exercise, if that check is ever deleted) the
+	// utf8.ValidString half.
 	payloads := []string{
 		"'; DROP TABLE weather_records; --",
 		"' OR '1'='1",
@@ -297,6 +305,7 @@ func TestAdversarialInputReachesNoSQLText(t *testing.T) {
 		"$1", "$$", "%s", "\\'", "\x00", "a\x00b", "''''",
 		strings.Repeat("'", 100),
 		"UNION SELECT NULL,NULL,NULL",
+		"\xff",
 	}
 	for _, p := range payloads {
 		if _, err := rs.Get(ctx, p); !errors.Is(err, store.ErrNotFound) {
@@ -308,6 +317,23 @@ func TestAdversarialInputReachesNoSQLText(t *testing.T) {
 		if _, _, err := ss.List(ctx, store.StationFilter{Search: p, Limit: 50}); err != nil {
 			t.Errorf("station List(search=%q) error = %v, want nil", p, err)
 		}
+	}
+
+	// Positive control. Every assertion above is "no error, and the tables
+	// survive" — which a search implementation that silently matched NOTHING for
+	// every input would also satisfy, by accident, since "does not error" says
+	// nothing about whether the query still does its job. "Bristol" is
+	// well-formed text with no adversarial content at all, and it must still find
+	// the station seeded above, or this whole gate would be vacuous: a broken
+	// search that always returns zero rows passes every negative check here
+	// without ever being a working search.
+	wellFormed, total, err := ss.List(ctx, store.StationFilter{Search: "Bristol", Limit: 50})
+	if err != nil {
+		t.Fatalf("station List(search=%q): %v", "Bristol", err)
+	}
+	if total != 1 || len(wellFormed) != 1 || wellFormed[0].StationID != 1000 {
+		t.Fatalf("station List(search=%q) = (%+v, total=%d), want exactly station 1000",
+			"Bristol", wellFormed, total)
 	}
 
 	// The tables are all still there.
