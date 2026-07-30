@@ -92,6 +92,40 @@ func TestIsoMillisTruncatesRatherThanRoundsSubMilliseconds(t *testing.T) {
 	}
 }
 
+func TestIsoMillisPadsAOneDigitMillisecondWithTwoLeadingZeros(t *testing.T) {
+	tm, err := time.Parse(time.RFC3339Nano, "2026-04-17T15:40:00.007Z")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	got, marshalErr := isoValue(tm).MarshalJSON()
+	if marshalErr != nil {
+		t.Fatalf("MarshalJSON: %v", marshalErr)
+	}
+
+	want := `"2026-04-17T15:40:00.007Z"`
+	if string(got) != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+}
+
+func TestIsoMillisPadsATwoDigitMillisecondWithOneLeadingZero(t *testing.T) {
+	tm, err := time.Parse(time.RFC3339Nano, "2026-04-17T15:40:00.042Z")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	got, marshalErr := isoValue(tm).MarshalJSON()
+	if marshalErr != nil {
+		t.Fatalf("MarshalJSON: %v", marshalErr)
+	}
+
+	want := `"2026-04-17T15:40:00.042Z"`
+	if string(got) != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+}
+
 func TestIsoMillisOutputIsLexicographicallySortable(t *testing.T) {
 	base, err := time.Parse(time.RFC3339Nano, "2026-04-17T15:40:59.999Z")
 	if err != nil {
