@@ -390,3 +390,84 @@ func (s *RecordStore) Complete(ctx context.Context, txID string, pubs []store.Pu
 	}
 	return out, nil
 }
+
+// The three terminal writes the publisher's error classifier makes. All three
+// share the same guard — `AND r.status = 'processing'` — so a write for a row
+// that was already reaped, already completed or never claimed is a no-op
+// rather than a corrupting overwrite.
+//
+// What differs between them is exactly the three columns that carry the
+// classification, and each difference is load-bearing:
+//
+//	FailPermanent  status=failed   attempts+1  adopt_required=false
+//	RequeueInfra   status=pending  attempts    adopt_required=false
+//	MarkUnknown    status=pending  attempts    adopt_required=TRUE
+//
+// Only a permanent error spends the attempt budget. Only an AMBIGUOUS outcome
+// sets adopt_required: it is the bit that makes the next claim run an adopt
+// check first, and without it a row whose prior batch did in fact publish gets
+// broadcast a second time. Preserving claim_ref alone is not enough, because a
+// pending row with a ref but adopt_required false runs no adopt check at all.
+const failPermanentSQL = `
+UPDATE weather_records AS r
+   SET status = 'failed', attempts = r.attempts + 1, error = $2,
+       processed_at = now(), claimed_at = NULL, adopt_required = false
+ WHERE r.id = ANY($1::text[]) AND r.status = 'processing'`
+
+const requeueInfraSQL = `
+UPDATE weather_records AS r
+   SET status = 'pending', error = $2, claimed_at = NULL, adopt_required = false
+ WHERE r.id = ANY($1::text[]) AND r.status = 'processing'`
+
+const markUnknownSQL = `
+UPDATE weather_records AS r
+   SET status = 'pending', error = $2, claimed_at = NULL, adopt_required = true
+ WHERE r.id = ANY($1::text[]) AND r.status = 'processing'`
+
+// FailPermanent implements store.RecordStore.
+func (s *RecordStore) FailPermanent(ctx context.Context, ids []string, reason string) error {
+	return s.classifierWrite(ctx, failPermanentSQL, ids, reason)
+}
+
+// RequeueInfra implements store.RecordStore.
+func (s *RecordStore) RequeueInfra(ctx context.Context, ids []string, reason string) error {
+	return s.classifierWrite(ctx, requeueInfraSQL, ids, reason)
+}
+
+// MarkUnknown implements store.RecordStore.
+func (s *RecordStore) MarkUnknown(ctx context.Context, ids []string, reason string) error {
+	return s.classifierWrite(ctx, markUnknownSQL, ids, reason)
+}
+
+// classifierWrite runs one of the three terminal statements.
+//
+// stmt is always one of the three package constants above. It is a parameter
+// of a private method and never derived from input, which is the only shape in
+// which passing SQL as a value is acceptable: there is no code path by which a
+// caller can supply a statement.
+//
+// ids is sorted before it is sent, on top of what the design spelled out:
+// Task 8's review measured that a writer touching a claimed batch in a
+// DIFFERENT id order than the claim took them produces deadlocks even under
+// SKIP LOCKED (184 vs a 35-deadlock bare-FOR-UPDATE baseline; 33 vs 35 even
+// with SKIP LOCKED against a differently-ordered concurrent writer). Each of
+// the three classifier writes is exactly that shape: a multi-row UPDATE over
+// `r.id = ANY($1::text[])` against rows ClaimPending already claimed (and
+// ordered). classify already buckets SQLSTATE 40P01 as transient, so a
+// deadlock here is survivable, but sorting removes the lock-order cycle at the
+// source instead of leaning on retry — the same fix Complete applies to pubs
+// and to the station order slice. The caller's slice is left untouched —
+// sorted is a copy — because interfaces.go makes no promise that any of these
+// three may reorder its argument.
+func (s *RecordStore) classifierWrite(ctx context.Context, stmt string, ids []string, reason string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	sorted := make([]string, len(ids))
+	copy(sorted, ids)
+	sort.Strings(sorted)
+	if _, err := s.db.Exec(ctx, stmt, sorted, reason); err != nil {
+		return classify(err)
+	}
+	return nil
+}
