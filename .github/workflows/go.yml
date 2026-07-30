@@ -41,6 +41,20 @@ jobs:
       - name: Test
         run: go test ./... -count=1
 
+      # `go test ./...` exits 0 for a package with no test files, and -count=1
+      # does not help: it defeats a stale cached PASS, not a vacuous one. This
+      # step fails the build when any package would be reported as a pass while
+      # executing nothing. It passes on the tree as of this commit.
+      - name: No package is silently untested
+        run: |
+          set -euo pipefail
+          missing=$(go list -f '{{if and (eq (len .TestGoFiles) 0) (eq (len .XTestGoFiles) 0)}}{{.ImportPath}}{{end}}' ./...)
+          if [ -n "$missing" ]; then
+            echo "Packages with no test files (go test ./... reports these as a pass):"
+            echo "$missing"
+            exit 1
+          fi
+
       # .golangci.json is config format version 2, so the linter must be v2.x —
       # and a v2 linter requires action v7 or newer. Action v6 rejects the
       # version string outright: "golangci-lint v2 is not supported by
@@ -62,3 +76,84 @@ jobs:
         run: |
           go test ./internal/weather -run TestGolden -update -count=1
           git diff --exit-code internal/weather/testdata/golden/
+
+  # Postgres-backed store tests, in a SEPARATE job so the `check` job stays
+  # byte-identical apart from the untested-package guard and a service-container
+  # failure can never take down vet, build, lint or the golden gate. The
+  # top-level `permissions: contents: read` above covers this job too.
+  integration:
+    name: integration (postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: weatherproof_test
+        ports:
+          - 5432:5432
+        # -d weatherproof_test rather than a bare pg_isready, so the gate means
+        # "the target database answers", not merely "the postmaster is up".
+        # 10 retries at 5 s is a 50 s budget against a ~2 s observed readiness.
+        options: >-
+          --health-cmd "pg_isready -U postgres -d weatherproof_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # WEATHER_TEST_REQUIRE_POSTGRES turns storetest's local-dev t.Skip into a
+      # t.Fatal. A renamed DSN variable, a mistyped env: key or a dropped
+      # service block is therefore a RED build, not a silent all-skip pass.
+      #
+      # The two `test -n` lines are the belt to that braces: if BOTH env keys
+      # were mistyped, RequireDSN would see neither, every Postgres test would
+      # t.Skip, and both jobs would be green. This fails before `go test` runs.
+      #
+      # -v plus the SKIP grep is what makes the acceptance criterion
+      # "nothing skips in CI" actually checkable: `go test` prints `--- SKIP`
+      # lines ONLY under -v, and a fully skipped package otherwise prints a
+      # bare `ok`.
+      - name: Store tests against Postgres
+        env:
+          WEATHER_TEST_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable
+          WEATHER_TEST_REQUIRE_POSTGRES: "1"
+        run: |
+          set -euo pipefail
+          test -n "$WEATHER_TEST_POSTGRES_DSN"
+          test -n "$WEATHER_TEST_REQUIRE_POSTGRES"
+          go test -race -count=1 -timeout 10m -v ./internal/store/... 2>&1 | tee /tmp/store-tests.log
+          if grep -q -- '--- SKIP' /tmp/store-tests.log; then
+            echo "a Postgres test skipped in CI; the suite must never skip here"
+            grep -- '--- SKIP' /tmp/store-tests.log
+            exit 1
+          fi
+
+      # One pass of a concurrency test is weak evidence. Repeat the claim race
+      # on its own so a scheduling-dependent escape shows up.
+      #
+      # The grep is not decoration. `go test -run` with a pattern matching
+      # NOTHING exits 0, so without it this step goes green while executing
+      # zero assertions the moment the test is renamed or deleted — a
+      # vacuous-green hole in the step guarding the highest-value invariant in
+      # the whole design. The regex is anchored for the same reason.
+      - name: Claim concurrency, repeated
+        env:
+          WEATHER_TEST_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable
+          WEATHER_TEST_REQUIRE_POSTGRES: "1"
+        run: |
+          set -euo pipefail
+          out=$(go test -race -count=5 -timeout 10m -run '^TestClaimPendingNeverDoubleClaims$' -v ./internal/store/postgres/)
+          echo "$out"
+          echo "$out" | grep -q -- '--- PASS: TestClaimPendingNeverDoubleClaims' || {
+            echo "the claim race did not run"
+            exit 1
+          }
