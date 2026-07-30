@@ -67,9 +67,13 @@ func (s *RecordStore) Insert(ctx context.Context, r store.NewRecord) (bool, erro
 // input BEEF, so it selects no funding UTXOs: two overlapping processes would
 // each be funded from DIFFERENT fuel outputs and BOTH would succeed, putting
 // the same readings on chain twice, paying for both, and orphaning whichever
-// transaction did not land last. Measured on this schema: the SELECT-then-
-// UPDATE shape double-claimed 399 of 420 rows with one row taken 12 times;
-// this shape double-claimed 0.
+// transaction did not land last. Measured on this schema, against this
+// package's own TestClaimPendingNeverDoubleClaims fixture (40 seeded rows,
+// 12 workers, 7-row batches): the SELECT-then-UPDATE shape double-claimed 20
+// of 20 distinct rows touched in one run, one row taken 8 times (an
+// independent rerun measured 16-21 of 16-21 touched, worst 6-9 — the exact
+// counts vary by scheduling; the shape, total double allocation, does not);
+// this shape double-claimed 0, confirmed across repeated -race runs.
 //
 // FOR UPDATE SKIP LOCKED must be in the SUBQUERY — it is not legal on the
 // outer UPDATE. The inner SELECT takes a row-level exclusive lock on each
@@ -126,9 +130,13 @@ func (s *RecordStore) ClaimPending(ctx context.Context, n int, ref uuid.UUID) ([
 // collectRecords drains rows into []store.Record.
 //
 // pgx.CollectRows closes rows and returns rows.Err() itself, so there is no
-// separate Close or Err to forget. The db struct tags on store.Record are what
-// RowToStructByName matches against, which is why every query in this package
-// names its columns explicitly and in the same order.
+// separate Close or Err to forget. RowToStructByName matches each returned
+// column to a struct field by NAME (its db tag), not by position, so the
+// column list's order is irrelevant here. What matters is that every query in
+// this package names its columns explicitly rather than SELECT * / RETURNING
+// *: RowToStructByName treats an unmatched column as a hard runtime error, so
+// a star projection would compile fine and then break the next time the
+// table's columns change, with no compile-time signal.
 func collectRecords(rows pgx.Rows) ([]store.Record, error) {
 	recs, err := pgx.CollectRows(rows, pgx.RowToStructByName[store.Record])
 	if err != nil {

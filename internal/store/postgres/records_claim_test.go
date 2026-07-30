@@ -121,6 +121,7 @@ func TestClaimPendingNeverDoubleClaims(t *testing.T) {
 	seen := make(map[string]int, seeded)
 	refs := make(map[uuid.UUID]int, workers)
 	errs := make([]error, 0, workers)
+	workersWithClaims := 0
 
 	var wg sync.WaitGroup
 	start := make(chan struct{})
@@ -142,6 +143,9 @@ func TestClaimPendingNeverDoubleClaims(t *testing.T) {
 			if err != nil {
 				errs = append(errs, err)
 				return
+			}
+			if len(recs) > 0 {
+				workersWithClaims++
 			}
 			for _, r := range recs {
 				seen[r.ID]++
@@ -174,6 +178,30 @@ func TestClaimPendingNeverDoubleClaims(t *testing.T) {
 	}
 	if len(seen) > seeded {
 		t.Fatalf("claimed %d distinct rows from %d seeded", len(seen), seeded)
+	}
+
+	// Liveness: a claim that silently returns zero rows (or too few) passes
+	// every assertion above VACUOUSLY — seen is empty, so processing == 0 ==
+	// len(seen) holds trivially, and there is nothing to double-claim. With 12
+	// workers * 7-row batches (84) far exceeding the 40 seeded rows, a live,
+	// correct claim must exhaust the whole queue, so anything less than all 40
+	// distinct rows claimed means the claim is dead or under-claiming, not
+	// merely "correctly conservative."
+	if len(seen) != seeded {
+		t.Fatalf("claimed %d distinct rows, want all %d seeded rows claimed", len(seen), seeded)
+	}
+
+	// Batch-label invariant: every seeded row starts with claim_ref NULL (see
+	// seedPending), so the FIRST claim on any row always stamps THAT worker's
+	// own ref — there is no reaped-row/prior-ref case in this fixture (that is
+	// TestClaimPendingPreservesAPriorRef's job). So the number of distinct refs
+	// among claimed rows must equal exactly the number of workers that claimed
+	// at least one row: this is the batch-label property the adopt design's
+	// idempotency check depends on, asserted here under the concurrency this
+	// test actually exercises rather than only in the single-writer tests.
+	if len(refs) != workersWithClaims {
+		t.Fatalf("distinct claim refs = %d, want %d (one ref per worker that claimed at least one row)",
+			len(refs), workersWithClaims)
 	}
 
 	// Every claimed row must be processing with a lease and a ref, and the
@@ -294,21 +322,36 @@ func TestClaimPendingPreservesAPriorRef(t *testing.T) {
 	}
 }
 
+// churnOrder is a fixed, non-identity permutation of index positions 0..9,
+// used below to shuffle the order in which TestClaimPendingIsFIFOAcrossATiedBatch's
+// ten equal-created_at fixture rows are updated in place before the first
+// claim. It is a literal permutation rather than a call into math/rand
+// (forbidden here by gosec G404) or crypto/rand (which would make the test's
+// discriminating behavior nondeterministic for no benefit): the property this
+// needs is simply SOME order other than the rows' insertion order, not
+// genuine randomness. (0,1,2,...,9 sorted confirms it is a full permutation.)
+var churnOrder = [10]int{6, 1, 8, 3, 0, 9, 4, 7, 2, 5}
+
 // TestClaimPendingIsFIFOAcrossATiedBatch pins the queue's batch-split behavior:
 // the first claim takes the oldest four rows and the second takes the next four.
 //
-// WHAT IT DOES NOT DO, stated because an earlier draft of this comment claimed
-// the opposite: it is NOT a regression gate on `, c.id ASC`. MEASURED on
-// postgres:17-alpine — with the tiebreaker deleted, and again with
-// ix_records_status_created also removed so the planner must sort, this test
-// still PASSED on three consecutive runs. At twenty rows in a freshly loaded
-// heap the untied query happens to agree with the tied one. The tiebreaker is
-// still mandatory, and the evidence for it is elsewhere:
-// TestCreatedAtIsTheTransactionTimestamp proves the whole batch shares one
-// created_at, and `LIMIT`/`OFFSET` over a non-total order is unspecified — at
-// production shape two legitimate plans for the identical untied query returned
-// 19 of 20 different rows at the same offset. Do not delete `, c.id ASC` on the
-// strength of this test staying green.
+// IT NOW GATES `, c.id ASC` — but only because of the churn pass below, and
+// that distinction is worth stating plainly because an earlier draft of this
+// comment said the opposite and was correct about it AT THE TIME. On a
+// freshly loaded heap, MEASURED on postgres:17-alpine, deleting the
+// tiebreaker (with and without ix_records_status_created, forcing the
+// planner to sort) still PASSED — a reviewer measured this up to 2,000 tied
+// rows, still 5 of 5 runs green, because a fresh index scan and a fresh
+// tuplesort both happen to emit ties in insertion order by construction. Row
+// COUNT was never the discriminator; heap CHURN is. The loop below updates
+// every row in place, in churnOrder rather than insertion order, so each
+// row's tuple gets a new physical heap position decorrelated from
+// created_at/id order — the production shape, not a synthetic trick, since
+// every row this queue ever reaps or requeues has already been updated once.
+// At this exact N=10/B=4 fixture, post-churn, the untiebroken query fails 5
+// of 5 runs and the tiebroken one still passes 5 of 5. Do not delete
+// `, c.id ASC` on the strength of a test run against a freshly loaded heap;
+// this one no longer is one.
 //
 // The assertion compares SETS PER BATCH, never positions within a batch, and
 // that is a correctness requirement rather than a stylistic preference:
@@ -323,6 +366,18 @@ func TestClaimPendingIsFIFOAcrossATiedBatch(t *testing.T) {
 	ctx := context.Background()
 	ids := seedPending(t, pool, 10, 1000)
 	rs := postgres.NewRecordStore(pool)
+
+	// Churn the heap before claiming: see churnOrder's doc comment for why a
+	// freshly loaded heap cannot discriminate the tiebreaker at all. Setting
+	// attempts to its own current value is a no-op for every assertion below
+	// — it must change nothing this test checks, only each row's physical
+	// heap position.
+	for _, idx := range churnOrder {
+		if _, err := pool.Exec(ctx,
+			"UPDATE weather_records SET attempts = attempts WHERE id = $1", ids[idx]); err != nil {
+			t.Fatalf("churning row %d: %v", idx, err)
+		}
+	}
 
 	// uuidv7 ids sort in generation order, so ids is already the intended FIFO
 	// order and the tiebreaker makes it the actual one.
