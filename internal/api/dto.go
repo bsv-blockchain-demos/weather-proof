@@ -103,12 +103,26 @@ type paginationDTO struct {
 	TotalPages int64 `json:"totalPages"`
 }
 
-// errorDTO is every non-2xx body. RequestID is a *string so the 400 and 404
-// bodies the spec pins verbatim ({"error":"Weather record not found"}) do not
-// grow a second key, while every 500 carries one.
-type errorDTO struct {
-	Error     string  `json:"error"`
-	RequestID *string `json:"request_id"`
+// clientErrorDTO is the body of every 4xx response. Spec §13.5/§13.6 pin the
+// 400/404 bodies verbatim as {"error":"Weather record not found"} — a single
+// key, nothing else. There is no request_id field at all (not an omitted
+// *string): the spec shape has no second key to grow, so a *string with
+// omitempty would still be wrong the moment anyone forgot the tag, whereas
+// a type that structurally cannot carry the field cannot regress.
+type clientErrorDTO struct {
+	Error string `json:"error"`
+}
+
+// serverErrorDTO is the body of every 5xx response. Per the Global
+// Constraints ("Error leakage" / §12.5), a 500 must never leak a
+// *pgconn.PgError or any other internal detail — it returns the fixed
+// literal "internal server error" plus a correlation id so the operator can
+// find the corresponding structured log line. RequestID is non-optional
+// (plain string, no omitempty): every 500 must carry one, never a null or
+// missing key.
+type serverErrorDTO struct {
+	Error     string `json:"error"`
+	RequestID string `json:"request_id"`
 }
 
 const (

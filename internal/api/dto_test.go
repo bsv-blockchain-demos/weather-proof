@@ -1,8 +1,13 @@
 package api
 
 import (
+	"embed"
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +15,15 @@ import (
 	"github.com/bsv-blockchain-demos/weather-proof/internal/store"
 	"github.com/bsv-blockchain-demos/weather-proof/internal/weather"
 )
+
+// packageSourceFS embeds every .go file in this package (production and test
+// alike) so TestNoDTOFieldUsesOmitempty can discover its subjects by parsing
+// the package's own source rather than from a hand-maintained list of
+// reflect.Type values — see that test's doc comment for why the list
+// approach is a gate that cannot be made to fail for a type it omits.
+//
+//go:embed *.go
+var packageSourceFS embed.FS
 
 func ptrStr(s string) *string        { return &s }
 func ptrInt32(i int32) *int32        { return &i }
@@ -461,38 +475,215 @@ func TestProjectionDoesNotAliasTheStoreRecordsPointers(t *testing.T) {
 	}
 }
 
-func TestErrorDTOOmitsRequestIDKeyOnlyWhenNil(t *testing.T) {
-	e := errorDTO{Error: "Weather record not found"}
+// TestWeatherDetailDoesNotAliasTheErrorPointer covers toWeatherDetail's
+// Error field, which TestProjectionDoesNotAliasTheStoreRecordsPointers does
+// not reach (that test only exercises toWeatherItem's TxID/ProcessedAt).
+// The expected body is a separately constructed literal, never a comparison
+// against the same variable the projection may have aliased: a prior test
+// in this repo passed with its clonePtr fix removed because the mutation
+// corrupted both the projected value and the comparison value identically.
+func TestWeatherDetailDoesNotAliasTheErrorPointer(t *testing.T) {
+	r := baseRecord()
+	errMsg := "original failure"
+	r.Error = &errMsg
+
+	detail := toWeatherDetail(r)
+
+	// Independently constructed expected value — built from a fresh record,
+	// not from r or errMsg.
+	wantRecord := baseRecord()
+	wantMsg := "original failure"
+	wantRecord.Error = &wantMsg
+	wantDetail := toWeatherDetail(wantRecord)
+	wantBytes, err := json.Marshal(wantDetail)
+	if err != nil {
+		t.Fatalf("marshal expected: %v", err)
+	}
+
+	// Mutate through the original pointer.
+	errMsg = "mutated after projection"
+
+	gotBytes, err := json.Marshal(detail)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if string(gotBytes) != string(wantBytes) {
+		t.Fatalf("toWeatherDetail aliased the source record's Error pointer: got %s, want %s", gotBytes, wantBytes)
+	}
+}
+
+// TestStationSummaryDoesNotAliasTheStoreStationsPointers covers
+// toStationSummary's LastTemp and LastBlockHeight fields, which
+// TestProjectionDoesNotAliasTheStoreRecordsPointers does not reach at all
+// (that test only exercises the weatherItem projection). The expected body
+// is built from independently-allocated pointer values, never compared
+// against the seed variables that fed the station under test.
+func TestStationSummaryDoesNotAliasTheStoreStationsPointers(t *testing.T) {
+	now := time.Date(2026, 4, 17, 16, 0, 0, 0, time.UTC)
+	pollRate := 20 * time.Minute
+
+	lastTemp := 12.5
+	lastBlockHeight := int64(879412)
+	s := store.Station{
+		StationID:       1,
+		IsActive:        true,
+		LastReading:     ptrTime(now),
+		LastTemp:        &lastTemp,
+		LastBlockHeight: &lastBlockHeight,
+	}
+
+	summary := toStationSummary(s, now, pollRate)
+
+	// Independently constructed expected value — fresh pointers, not
+	// aliased to lastTemp/lastBlockHeight above.
+	wantTemp := 12.5
+	wantBlockHeight := int64(879412)
+	wantStation := store.Station{
+		StationID:       1,
+		IsActive:        true,
+		LastReading:     ptrTime(now),
+		LastTemp:        &wantTemp,
+		LastBlockHeight: &wantBlockHeight,
+	}
+	wantSummary := toStationSummary(wantStation, now, pollRate)
+	wantBytes, err := json.Marshal(wantSummary)
+	if err != nil {
+		t.Fatalf("marshal expected: %v", err)
+	}
+
+	// Mutate through the original pointers.
+	lastTemp = 99.9
+	lastBlockHeight = 1
+
+	gotBytes, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if string(gotBytes) != string(wantBytes) {
+		t.Fatalf("toStationSummary aliased the source station's pointers: got %s, want %s", gotBytes, wantBytes)
+	}
+}
+
+// TestClientErrorDTOHasOnlyTheErrorKey pins spec §13.5/§13.6's verbatim
+// 4xx body: exactly one key, no request_id at all — not present-and-null,
+// absent.
+func TestClientErrorDTOHasOnlyTheErrorKey(t *testing.T) {
+	e := clientErrorDTO{Error: "Weather record not found"}
 	b, err := json.Marshal(e)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	want := `{"error":"Weather record not found","request_id":null}`
+	want := `{"error":"Weather record not found"}`
+	if string(b) != want {
+		t.Fatalf("got %s, want %s", b, want)
+	}
+	var m map[string]any
+	if unmarshalErr := json.Unmarshal(b, &m); unmarshalErr != nil {
+		t.Fatalf("unmarshal: %v", unmarshalErr)
+	}
+	if _, ok := m["request_id"]; ok {
+		t.Fatalf("clientErrorDTO must not carry a request_id key at all: %s", b)
+	}
+}
+
+// TestServerErrorDTOAlwaysCarriesARequestID pins the Global Constraints'
+// 500 shape: the opaque literal plus a non-optional request_id, present on
+// every occurrence.
+func TestServerErrorDTOAlwaysCarriesARequestID(t *testing.T) {
+	e := serverErrorDTO{Error: "internal server error", RequestID: "01970000-aaaa-7000-8000-000000000001"}
+	b, err := json.Marshal(e)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	want := `{"error":"internal server error","request_id":"01970000-aaaa-7000-8000-000000000001"}`
 	if string(b) != want {
 		t.Fatalf("got %s, want %s", b, want)
 	}
 }
 
+// TestNoDTOFieldUsesOmitempty discovers its subjects by parsing this
+// package's own embedded source with go/parser rather than from a
+// hand-maintained slice of reflect.Type values. A hardcoded list is a gate
+// that cannot be made to fail for a type the list omits, and it silently
+// stops covering any DTO a later task adds unless someone remembers to
+// append it. Walking every struct type declaration in the package's source
+// instead means a new file, a new struct, or a renamed struct is covered
+// automatically: discovery is by AST shape (TypeSpec whose Type is a
+// StructType), never by name.
+//
+// weather.WeatherData is the one exception: it is frozen (B1) and lives in
+// a different package's directory, so it cannot be found by walking this
+// package's embedded source. It is checked separately, by reflection, right
+// below.
 func TestNoDTOFieldUsesOmitempty(t *testing.T) {
-	types := []reflect.Type{
-		reflect.TypeOf(weatherItem{}),
-		reflect.TypeOf(weatherDetail{}),
-		reflect.TypeOf(blockchainDTO{}),
-		reflect.TypeOf(stationSummary{}),
-		reflect.TypeOf(statsDTO{}),
-		reflect.TypeOf(paginationDTO{}),
-		reflect.TypeOf(weather.WeatherData{}),
+	entries, readDirErr := packageSourceFS.ReadDir(".")
+	if readDirErr != nil {
+		t.Fatalf("read embedded package dir: %v", readDirErr)
 	}
 
 	fieldCount := 0
-	for _, rt := range types {
-		for i := 0; i < rt.NumField(); i++ {
-			fieldCount++
-			tag := rt.Field(i).Tag.Get("json")
-			if strings.Contains(tag, "omitempty") {
-				t.Errorf("%s.%s carries omitempty in tag %q", rt.Name(), rt.Field(i).Name, tag)
-			}
+	structCount := 0
+	fset := token.NewFileSet()
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
 		}
+		src, readErr := packageSourceFS.ReadFile(entry.Name())
+		if readErr != nil {
+			t.Fatalf("read embedded file %s: %v", entry.Name(), readErr)
+		}
+		file, parseErr := parser.ParseFile(fset, entry.Name(), src, 0)
+		if parseErr != nil {
+			t.Fatalf("parse %s: %v", entry.Name(), parseErr)
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			ts, ok := n.(*ast.TypeSpec)
+			if !ok {
+				return true
+			}
+			st, ok := ts.Type.(*ast.StructType)
+			if !ok || st.Fields == nil {
+				return true
+			}
+			structCount++
+			for _, field := range st.Fields.List {
+				fieldCount++
+				if field.Tag == nil {
+					continue
+				}
+				raw, unquoteErr := strconv.Unquote(field.Tag.Value)
+				if unquoteErr != nil {
+					t.Errorf("%s: bad tag literal %q: %v", ts.Name.Name, field.Tag.Value, unquoteErr)
+					continue
+				}
+				jsonTag := reflect.StructTag(raw).Get("json")
+				if strings.Contains(jsonTag, "omitempty") {
+					name := "<embedded>"
+					if len(field.Names) > 0 {
+						names := make([]string, 0, len(field.Names))
+						for _, id := range field.Names {
+							names = append(names, id.Name)
+						}
+						name = strings.Join(names, ",")
+					}
+					t.Errorf("%s.%s carries omitempty in tag %q (%s)", ts.Name.Name, name, jsonTag, entry.Name())
+				}
+			}
+			return true
+		})
+	}
+
+	wt := reflect.TypeOf(weather.WeatherData{})
+	for i := 0; i < wt.NumField(); i++ {
+		fieldCount++
+		tag := wt.Field(i).Tag.Get("json")
+		if strings.Contains(tag, "omitempty") {
+			t.Errorf("weather.WeatherData.%s carries omitempty in tag %q", wt.Field(i).Name, tag)
+		}
+	}
+
+	if structCount == 0 {
+		t.Fatalf("positive control failed: discovered no struct type declarations in the embedded package source")
 	}
 	if fieldCount < 60 {
 		t.Fatalf("positive control failed: only inspected %d fields, want >= 60", fieldCount)
