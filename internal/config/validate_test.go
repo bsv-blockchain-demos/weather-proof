@@ -405,6 +405,66 @@ func TestRule16AcceptsTheInheritedBand(t *testing.T) {
 	}
 }
 
+func TestRule17RejectsAMalformedCIDR(t *testing.T) {
+	c := validConfig(t)
+	c.TrustedProxyCIDRs = []string{"10.0.0.0/99"}
+
+	err := config.Validate(c, config.SubServe)
+	if err == nil || !strings.Contains(err.Error(), "TRUSTED_PROXY_CIDRS") {
+		t.Fatalf("Validate() = %v, want an error naming TRUSTED_PROXY_CIDRS", err)
+	}
+}
+
+func TestRule17AcceptsAnEmptyList(t *testing.T) {
+	c := validConfig(t)
+	c.TrustedProxyCIDRs = nil
+
+	err := config.Validate(c, config.SubServe)
+	if err != nil && strings.Contains(err.Error(), "TRUSTED_PROXY_CIDRS") {
+		t.Errorf("Validate() = %v, did not want it to name TRUSTED_PROXY_CIDRS", err)
+	}
+}
+
+func TestRule18RejectsZero(t *testing.T) {
+	c := validConfig(t)
+	c.ProofRateLimitPerMin = 0
+
+	err := config.Validate(c, config.SubServe)
+	if err == nil || !strings.Contains(err.Error(), "PROOF_RATE_LIMIT_PER_MIN") {
+		t.Fatalf("Validate() = %v, want an error naming PROOF_RATE_LIMIT_PER_MIN", err)
+	}
+}
+
+func TestRule18RejectsANegativeValue(t *testing.T) {
+	c := validConfig(t)
+	c.ProofRateLimitPerMin = -5
+
+	err := config.Validate(c, config.SubServe)
+	if err == nil || !strings.Contains(err.Error(), "PROOF_RATE_LIMIT_PER_MIN") {
+		t.Fatalf("Validate() = %v, want an error naming PROOF_RATE_LIMIT_PER_MIN", err)
+	}
+}
+
+func TestRule18AcceptsOne(t *testing.T) {
+	c := validConfig(t)
+	c.ProofRateLimitPerMin = 1
+
+	err := config.Validate(c, config.SubServe)
+	if err != nil && strings.Contains(err.Error(), "PROOF_RATE_LIMIT_PER_MIN") {
+		t.Errorf("Validate() = %v, did not want it to name PROOF_RATE_LIMIT_PER_MIN", err)
+	}
+}
+
+func TestRule18AcceptsTheDefault(t *testing.T) {
+	c := validConfig(t)
+	// ProofRateLimitPerMin is left at Load's default (60).
+
+	err := config.Validate(c, config.SubServe)
+	if err != nil && strings.Contains(err.Error(), "PROOF_RATE_LIMIT_PER_MIN") {
+		t.Errorf("Validate() = %v, did not want it to name PROOF_RATE_LIMIT_PER_MIN", err)
+	}
+}
+
 func TestRule19RejectsAnUnknownLogLevel(t *testing.T) {
 	c := validConfig(t)
 	c.LogLevel = "verbose"

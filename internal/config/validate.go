@@ -47,6 +47,8 @@ var ruleSets = map[Subcommand][]func(*Config) error{
 		(*Config).rule14,
 		(*Config).rule15,
 		(*Config).rule16,
+		(*Config).rule17,
+		(*Config).rule18,
 		(*Config).rule19,
 	},
 	SubDepositAddress: {
@@ -282,6 +284,25 @@ func (c *Config) rule15() error {
 func (c *Config) rule16() error {
 	if c.LowWaterPercent >= c.HighWaterPercent {
 		return errors.New("water band: low water percent must be below high water percent")
+	}
+	return nil
+}
+
+// rule17 requires TRUSTED_PROXY_CIDRS to parse: every entry must be a valid
+// CIDR. The parsed value itself is not kept here — main builds it once via
+// ParseCIDRList and hands it to the limiter — this rule only proves
+// parseability so serve fails closed on a malformed ConfigMap entry.
+func (c *Config) rule17() error {
+	if _, err := ParseCIDRList(c.TrustedProxyCIDRs); err != nil {
+		return err
+	}
+	return nil
+}
+
+// rule18 requires PROOF_RATE_LIMIT_PER_MIN to be strictly positive.
+func (c *Config) rule18() error {
+	if c.ProofRateLimitPerMin < 1 {
+		return errors.New("PROOF_RATE_LIMIT_PER_MIN: must be at least 1")
 	}
 	return nil
 }
