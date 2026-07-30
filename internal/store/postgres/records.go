@@ -115,6 +115,43 @@ UPDATE weather_records AS r
        )
 RETURNING ` + recordColumnsAliased
 
+// clampLimit is the SINGLE enforcement point, for the whole package, of
+// interfaces.go's frozen rule: a non-positive limit returns zero rows (or a
+// zero count) with a NIL error, and is never left to Postgres's own LIMIT
+// clause to decide. LIMIT 0 already returns zero rows with no error on its
+// own, but a negative LIMIT raises a runtime error (SQLSTATE 2201W, which
+// classify below maps to ErrOperation) rather than the "zero rows, nil
+// error" the interface promises for EVERY non-positive value.
+//
+// It exists because prose alone has now failed TWICE to prevent this exact
+// divergence, in this exact package. First, ClaimPending shipped with n <= 0
+// unclamped despite interfaces.go already stating the rule in words, and
+// only a later review caught it (fixed by an inline `if n <= 0` guard).
+// Second — with that very doc comment sitting right above it, and a
+// prescribed test suite that never exercised a non-positive limit — the
+// verbatim implementation given for ReapExpired and Requeue omitted the same
+// guard, and a negative limit measured the identical SQLSTATE 2201W leaking
+// through classify. Two independent methods re-deriving the same one-line
+// check is exactly how the second divergence happened, so every limit-taking
+// query in this package (ClaimPending's n, ReapExpired's limit, both of
+// Requeue's f.Limit uses) now calls this one function instead of writing its
+// own `if n <= 0`. Nobody should ever need to inline a fresh non-positive
+// check again; if a future method takes a limit, it calls clampLimit.
+//
+// ok reports whether the caller should proceed with the returned (always
+// positive) limit. When ok is false, the caller must return its own
+// zero-value success result — an empty-but-NON-NIL slice, or a zero count —
+// with a nil error, and must not build or send a query at all: a canceled
+// context reaching that far would otherwise surface as a non-nil error,
+// which is exactly how the package's tests prove the guard fired before any
+// database round trip.
+func clampLimit(n int) (limit int, ok bool) {
+	if n <= 0 {
+		return 0, false
+	}
+	return n, true
+}
+
 // ClaimPending implements store.RecordStore.
 //
 // ref is a parameter rather than a gen_random_uuid() call inside the SQL
@@ -124,20 +161,15 @@ RETURNING ` + recordColumnsAliased
 // Measured: the inline form produced 21 distinct refs for 21 rows; this form
 // produces exactly 1.
 //
-// n <= 0 is clamped HERE, in Go, before claimSQL is ever built or sent —
-// never left to Postgres's own LIMIT to decide. LIMIT 0 already returns zero
-// rows with no error, but a negative LIMIT raises a runtime error (SQLSTATE
-// 2201W, classified below to ErrOperation), and interfaces.go's ClaimPending
-// doc states one rule for every implementation: zero rows, nil error, never
-// unbounded. Leaving that to the driver would make a caller's behavior
-// depend on which implementation is wired in, which is exactly what a frozen
-// interface exists to prevent. []store.Record{} rather than nil matches what
-// pgx.CollectRows itself returns for a genuine zero-row result — CollectRows
-// is AppendRows([]T{}, ...), so a real "nothing pending" result is also a
-// non-nil empty slice — meaning a caller cannot distinguish "clamped" from
-// "nothing was pending" by nil-ness either way.
+// n is clamped by clampLimit — see its doc for why this is the package's
+// single enforcement point rather than an inline check here. []store.Record{}
+// rather than nil matches what pgx.CollectRows itself returns for a genuine
+// zero-row result — CollectRows is AppendRows([]T{}, ...), so a real "nothing
+// pending" result is also a non-nil empty slice — meaning a caller cannot
+// distinguish "clamped" from "nothing was pending" by nil-ness either way.
 func (s *RecordStore) ClaimPending(ctx context.Context, n int, ref uuid.UUID) ([]store.Record, error) {
-	if n <= 0 {
+	n, ok := clampLimit(n)
+	if !ok {
 		return []store.Record{}, nil
 	}
 	rows, err := s.db.Query(ctx, claimSQL, n, ref)
@@ -560,7 +592,14 @@ func intervalArg(d time.Duration) string {
 }
 
 // ReapExpired implements store.RecordStore.
+//
+// limit is clamped by clampLimit — see its doc for why this is the package's
+// single enforcement point rather than an inline check here.
 func (s *RecordStore) ReapExpired(ctx context.Context, lease time.Duration, limit int) ([]store.Record, error) {
+	limit, ok := clampLimit(limit)
+	if !ok {
+		return []store.Record{}, nil
+	}
 	rows, err := s.db.Query(ctx, reapExpiredSQL, intervalArg(lease), limit)
 	if err != nil {
 		return nil, classify(err)
@@ -569,18 +608,27 @@ func (s *RecordStore) ReapExpired(ctx context.Context, lease time.Duration, limi
 }
 
 // Requeue implements store.RecordStore.
+//
+// f.Limit is clamped by clampLimit — see its doc for why this is the
+// package's single enforcement point rather than an inline check here. The
+// clamp applies identically to both the DryRun count and the real write, so
+// neither path can disagree with the other about a non-positive limit.
 func (s *RecordStore) Requeue(ctx context.Context, f store.RequeueFilter) (int64, error) {
+	limit, ok := clampLimit(f.Limit)
+	if !ok {
+		return 0, nil
+	}
 	if f.DryRun {
 		var n int64
 		err := s.db.QueryRow(ctx, requeueCountSQL,
-			string(f.Status), intervalArg(f.Since), f.StationID, f.Limit).Scan(&n)
+			string(f.Status), intervalArg(f.Since), f.StationID, limit).Scan(&n)
 		if err != nil {
 			return 0, classify(err)
 		}
 		return n, nil
 	}
 	ct, err := s.db.Exec(ctx, requeueSQL,
-		string(f.Status), intervalArg(f.Since), f.StationID, f.Limit)
+		string(f.Status), intervalArg(f.Since), f.StationID, limit)
 	if err != nil {
 		return 0, classify(err)
 	}
