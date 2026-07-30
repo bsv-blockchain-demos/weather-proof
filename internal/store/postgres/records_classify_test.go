@@ -183,3 +183,214 @@ func TestClassifierWritesOnlyTouchProcessingRows(t *testing.T) {
 		t.Fatalf("MarkUnknown with a nil slice: %v", err)
 	}
 }
+
+// excludedSnapshot is rowState reduced to plain, pointer-free fields.
+//
+// It exists to close a specific hole: comparing two rowState values directly
+// would compare *string fields (errText) across two independent scans, and a
+// naive "hold onto the earlier read as the expected value" approach is
+// exactly the shape of Task 2's shared-reason-pointer defect — a comparison
+// built on a shared or aliased pointer can appear consistent on both sides
+// even when the underlying data changed, because nothing forces the two
+// sides to be independently sourced values rather than the same memory
+// viewed twice. Every field of excludedSnapshot is a value type (string,
+// int32, bool), so it is directly `==`-comparable, and `before != after` can
+// only be true if the actual COLUMN value changed between the two
+// snapshotExcluded calls — there is no pointer for a bug to hide behind.
+type excludedSnapshot struct {
+	status   string
+	attempts int32
+	adopt    bool
+	hasError bool
+	errText  string
+	hasLease bool
+	hasRef   bool
+}
+
+// snapshotExcluded reads id's full state and immediately dereferences the
+// nullable error column into a value (hasError, errText), so the returned
+// excludedSnapshot shares no memory with any other snapshot taken before or
+// after it.
+func snapshotExcluded(t testing.TB, pool *pgxpool.Pool, id string) excludedSnapshot {
+	t.Helper()
+	st := readRowState(t, pool, id)
+	snap := excludedSnapshot{
+		status:   st.status,
+		attempts: st.attempts,
+		adopt:    st.adoptRequired,
+		hasLease: st.hasLease,
+		hasRef:   st.hasRef,
+	}
+	if st.errText != nil {
+		snap.hasError = true
+		snap.errText = *st.errText
+	}
+	return snap
+}
+
+// TestFailPermanentLeavesAnExcludedProcessingRowUntouched closes the gap
+// mutation testing found: a predicate that widened from
+// `r.id = ANY($1::text[]) AND r.status = 'processing'` to just
+// `r.status = 'processing'` (i.e. the id filter silently dropped while the
+// status guard stayed) passed every other test in this file, because no
+// fixture here ever claims MORE rows than it then names in a single call.
+// This is the worst-case direction for FailPermanent specifically: an
+// infrastructure blip meant for two records would instead terminally fail
+// the whole in-flight batch, and 'failed' is not reversible by a later
+// retry.
+//
+// Three rows are claimed so that one can be excluded from the call while two
+// are targeted — excluding the ONLY other row would leave nothing in the
+// batch for the predicate to over-match against, since a single-row claim
+// has no sibling to leak into.
+func TestFailPermanentLeavesAnExcludedProcessingRowUntouched(t *testing.T) {
+	pool := storetest.Fresh(t, storeSchema)
+	ctx := context.Background()
+	seedPending(t, pool, 3, 1000)
+	rs := postgres.NewRecordStore(pool)
+
+	claimed, err := rs.ClaimPending(ctx, 3, uuid.Must(uuid.NewV7()))
+	if err != nil {
+		t.Fatalf("ClaimPending: %v", err)
+	}
+	if len(claimed) != 3 {
+		t.Fatalf("claimed %d rows, want 3", len(claimed))
+	}
+	ids := make([]string, 0, len(claimed))
+	for _, r := range claimed {
+		ids = append(ids, r.ID)
+	}
+	targeted := ids[:2]
+	excludedID := ids[2]
+
+	before := snapshotExcluded(t, pool, excludedID)
+
+	if err := rs.FailPermanent(ctx, targeted, "script too large"); err != nil {
+		t.Fatalf("FailPermanent: %v", err)
+	}
+
+	// The two named rows must actually have moved, or the exclusion
+	// assertion below would hold vacuously because the call did nothing at
+	// all rather than correctly scoping itself to `targeted`.
+	for _, id := range targeted {
+		st := readRowState(t, pool, id)
+		if st.status != string(store.StatusFailed) {
+			t.Errorf("targeted row %s status = %q, want failed", id, st.status)
+		}
+		if st.attempts != 1 {
+			t.Errorf("targeted row %s attempts = %d, want 1", id, st.attempts)
+		}
+	}
+
+	after := snapshotExcluded(t, pool, excludedID)
+	if after != before {
+		t.Errorf("excluded row %s (not named in the FailPermanent call) changed: before %+v, after %+v",
+			excludedID, before, after)
+	}
+	if after.status != string(store.StatusProcessing) {
+		t.Errorf("excluded row %s status = %q, want still processing", excludedID, after.status)
+	}
+}
+
+// TestRequeueInfraLeavesAnExcludedProcessingRowUntouched is
+// TestFailPermanentLeavesAnExcludedProcessingRowUntouched's sibling for
+// RequeueInfra: the same dropped-id-filter mutation would return the WHOLE
+// batch to pending rather than just the two infra-affected rows, silently
+// requeuing a row that may have nothing wrong with it and letting a second,
+// unrelated worker pick it up mid-flight.
+func TestRequeueInfraLeavesAnExcludedProcessingRowUntouched(t *testing.T) {
+	pool := storetest.Fresh(t, storeSchema)
+	ctx := context.Background()
+	seedPending(t, pool, 3, 1000)
+	rs := postgres.NewRecordStore(pool)
+
+	claimed, err := rs.ClaimPending(ctx, 3, uuid.Must(uuid.NewV7()))
+	if err != nil {
+		t.Fatalf("ClaimPending: %v", err)
+	}
+	if len(claimed) != 3 {
+		t.Fatalf("claimed %d rows, want 3", len(claimed))
+	}
+	ids := make([]string, 0, len(claimed))
+	for _, r := range claimed {
+		ids = append(ids, r.ID)
+	}
+	targeted := ids[:2]
+	excludedID := ids[2]
+
+	before := snapshotExcluded(t, pool, excludedID)
+
+	if err := rs.RequeueInfra(ctx, targeted, "storage server unreachable"); err != nil {
+		t.Fatalf("RequeueInfra: %v", err)
+	}
+
+	for _, id := range targeted {
+		st := readRowState(t, pool, id)
+		if st.status != string(store.StatusPending) {
+			t.Errorf("targeted row %s status = %q, want pending", id, st.status)
+		}
+		if st.hasLease {
+			t.Errorf("targeted row %s still holds a lease", id)
+		}
+	}
+
+	after := snapshotExcluded(t, pool, excludedID)
+	if after != before {
+		t.Errorf("excluded row %s (not named in the RequeueInfra call) changed: before %+v, after %+v",
+			excludedID, before, after)
+	}
+	if after.status != string(store.StatusProcessing) {
+		t.Errorf("excluded row %s status = %q, want still processing", excludedID, after.status)
+	}
+}
+
+// TestMarkUnknownLeavesAnExcludedProcessingRowUntouched is
+// TestFailPermanentLeavesAnExcludedProcessingRowUntouched's sibling for
+// MarkUnknown: the same dropped-id-filter mutation would stamp
+// adopt_required on the WHOLE batch, forcing an unnecessary adopt check on a
+// row whose outcome was never actually ambiguous.
+func TestMarkUnknownLeavesAnExcludedProcessingRowUntouched(t *testing.T) {
+	pool := storetest.Fresh(t, storeSchema)
+	ctx := context.Background()
+	seedPending(t, pool, 3, 1000)
+	rs := postgres.NewRecordStore(pool)
+
+	claimed, err := rs.ClaimPending(ctx, 3, uuid.Must(uuid.NewV7()))
+	if err != nil {
+		t.Fatalf("ClaimPending: %v", err)
+	}
+	if len(claimed) != 3 {
+		t.Fatalf("claimed %d rows, want 3", len(claimed))
+	}
+	ids := make([]string, 0, len(claimed))
+	for _, r := range claimed {
+		ids = append(ids, r.ID)
+	}
+	targeted := ids[:2]
+	excludedID := ids[2]
+
+	before := snapshotExcluded(t, pool, excludedID)
+
+	if err := rs.MarkUnknown(ctx, targeted, "publish outcome ambiguous"); err != nil {
+		t.Fatalf("MarkUnknown: %v", err)
+	}
+
+	for _, id := range targeted {
+		st := readRowState(t, pool, id)
+		if st.status != string(store.StatusPending) {
+			t.Errorf("targeted row %s status = %q, want pending", id, st.status)
+		}
+		if !st.adoptRequired {
+			t.Errorf("targeted row %s adopt_required = false, want true", id)
+		}
+	}
+
+	after := snapshotExcluded(t, pool, excludedID)
+	if after != before {
+		t.Errorf("excluded row %s (not named in the MarkUnknown call) changed: before %+v, after %+v",
+			excludedID, before, after)
+	}
+	if after.status != string(store.StatusProcessing) {
+		t.Errorf("excluded row %s status = %q, want still processing", excludedID, after.status)
+	}
+}
