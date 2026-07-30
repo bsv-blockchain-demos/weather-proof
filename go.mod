@@ -1,6 +1,6 @@
 module github.com/bsv-blockchain-demos/weather-proof
 
-go 1.26.3
+go 1.26.5
 
 require (
 	github.com/bsv-blockchain/go-sdk v1.3.2
