@@ -66,6 +66,13 @@ type Config struct {
 	ProofRateLimitPerMin int
 	LogLevel             string
 
+	// LowWaterPercent and HighWaterPercent bound the fuel pool's resolved
+	// water band (rule 16). They are deliberately NOT environment
+	// variables — spec §8.15 has no corresponding entries — and are set to
+	// their inherited defaults 60 and 85 by Load.
+	LowWaterPercent  int
+	HighWaterPercent int
+
 	// parseErrs collects malformed-value errors from Load so Validate can
 	// return them alongside the rule failures. A malformed int must never be
 	// silently replaced by the default — that is the FUNDING_BACKET_MIN class
@@ -118,6 +125,10 @@ func Load() *Config {
 	c.TrustedProxyCIDRs = splitTrimmed(envString("TRUSTED_PROXY_CIDRS", ""))
 	c.ProofRateLimitPerMin = envInt(c, "PROOF_RATE_LIMIT_PER_MIN", 60)
 	c.LogLevel = envString("LOG_LEVEL", "info")
+
+	// Not environment variables; see the field doc comment.
+	c.LowWaterPercent = 60
+	c.HighWaterPercent = 85
 
 	return c
 }
