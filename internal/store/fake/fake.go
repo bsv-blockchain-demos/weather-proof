@@ -165,20 +165,43 @@ func (s *Store) Insert(_ context.Context, r store.NewRecord) (bool, error) {
 	return true, nil
 }
 
+// clampLimit is the fake's single enforcement point for interfaces.go's
+// frozen non-positive-limit rule, mirroring postgres.clampLimit's contract
+// exactly: a non-positive limit means "return zero rows (or a zero count)
+// with a nil error," never "unbounded." ok reports whether the caller
+// should proceed with the returned (always positive) limit.
+//
+// It exists here for the SAME reason it exists in the postgres package: two
+// separate one-line reimplementations of "is n positive" already diverged
+// from the rule INSIDE this exact package, caught only by a later review
+// rather than by a test any of the six prescribed fixtures exercised.
+// ReapExpired's old `if len(out) == limit { break }` loop guard can never
+// equal a NEGATIVE limit, so it reaped (and mutated!) every stranded row
+// instead of none — while limit == 0 happened to work, by the same loop
+// coincidentally starting len(out) at 0. Requeue's old
+// `if f.Limit > 0 && len(match) > f.Limit` skipped truncation for ANY
+// non-positive limit, zero included, so both its DryRun count and its real
+// write touched every matched row regardless of Limit. Every limit-taking
+// method in this package now calls this one function instead of writing its
+// own comparison, exactly as postgres.clampLimit's own doc comment demands
+// of that package.
+func clampLimit(n int) (limit int, ok bool) {
+	if n <= 0 {
+		return 0, false
+	}
+	return n, true
+}
+
 // ClaimPending implements store.RecordStore.
 //
-// n <= 0 returns zero rows with a nil error, matching List's Limit<=0 rule
-// (see interfaces.go) and matching what postgres.RecordStore.ClaimPending
-// clamps to as well: both implementations guard n before doing any work,
-// rather than either of the two things a naive port of
-// `make([]store.Record, 0, n)` would do here: PANIC for n < 0 (cap out of
-// range), or — if only the make were guarded — claim EVERY pending row,
-// because `len(out) == n` can never be true for a negative n.
+// n is clamped by clampLimit — see its doc comment for why this is the
+// package's single enforcement point rather than an inline check here.
 func (s *Store) ClaimPending(_ context.Context, n int, ref uuid.UUID) ([]store.Record, error) {
 	if s.FailAll != nil {
 		return nil, s.FailAll
 	}
-	if n <= 0 {
+	n, ok := clampLimit(n)
+	if !ok {
 		return []store.Record{}, nil
 	}
 	s.mu.Lock()
@@ -313,9 +336,20 @@ func (s *Store) MarkUnknown(_ context.Context, ids []string, reason string) erro
 }
 
 // ReapExpired implements store.RecordStore.
+//
+// limit is clamped by clampLimit — see its doc comment for why this is the
+// package's single enforcement point rather than an inline check here. The
+// clamp runs BEFORE the lock is taken and before any row is read, so a
+// non-positive limit never mutates a single row — unlike the old
+// `if len(out) == limit { break }` loop guard, which could never equal a
+// negative limit and so reaped (and mutated) every stale row for one.
 func (s *Store) ReapExpired(_ context.Context, lease time.Duration, limit int) ([]store.Record, error) {
 	if s.FailAll != nil {
 		return nil, s.FailAll
+	}
+	limit, ok := clampLimit(limit)
+	if !ok {
+		return []store.Record{}, nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -354,9 +388,22 @@ func (s *Store) ReapExpired(_ context.Context, lease time.Duration, limit int) (
 }
 
 // Requeue implements store.RecordStore.
+//
+// f.Limit is clamped by clampLimit — see its doc comment for why this is the
+// package's single enforcement point rather than an inline check here. The
+// clamp applies identically to both the DryRun count and the real write
+// (both return before either the count or the mutation loop runs), so
+// neither path can disagree with the other about a non-positive limit. The
+// old `if f.Limit > 0 && len(match) > f.Limit` guard skipped truncation
+// entirely for ANY non-positive limit, so both paths touched every matched
+// row regardless of Limit.
 func (s *Store) Requeue(_ context.Context, f store.RequeueFilter) (int64, error) {
 	if s.FailAll != nil {
 		return 0, s.FailAll
+	}
+	limit, ok := clampLimit(f.Limit)
+	if !ok {
+		return 0, nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -373,8 +420,8 @@ func (s *Store) Requeue(_ context.Context, f store.RequeueFilter) (int64, error)
 		match = append(match, r)
 	}
 	sortOldestFirst(match)
-	if f.Limit > 0 && len(match) > f.Limit {
-		match = match[:f.Limit]
+	if len(match) > limit {
+		match = match[:limit]
 	}
 	if f.DryRun {
 		return int64(len(match)), nil
@@ -408,18 +455,20 @@ func (s *Store) List(_ context.Context, f store.ListFilter) ([]store.Record, int
 	}
 	sortNewestFirst(match)
 
-	// A Limit of zero or negative returns zero rows, matching SQL's own LIMIT
-	// $n for n=0 (and clamping the n<0 case, which LIMIT itself would refuse
-	// with a runtime error, to the same empty result rather than propagating a
-	// driver error). Total is computed above and is unaffected.
+	// f.Limit is clamped by clampLimit — see its doc comment for why this is
+	// the package's single enforcement point rather than an inline check
+	// here. As in postgres.RecordStore.List, a clamped limit does NOT
+	// short-circuit the whole method: Total must still report the full
+	// unpaged count of matching rows even when the page is empty.
 	total := int64(len(match))
-	if f.Limit <= 0 {
+	limit, ok := clampLimit(f.Limit)
+	if !ok {
 		return []store.Record{}, total, nil
 	}
 	if f.Offset >= len(match) {
 		return []store.Record{}, total, nil
 	}
-	end := f.Offset + f.Limit
+	end := f.Offset + limit
 	if end > len(match) {
 		end = len(match)
 	}
@@ -497,9 +546,18 @@ func (s *Store) SetBlockHeights(_ context.Context, ups []store.BlockHeightUpdate
 }
 
 // ReconcileCandidates implements store.RecordStore.
+//
+// limit is clamped by clampLimit — see its doc comment for why this is the
+// package's single enforcement point rather than an inline check here. The
+// old `if limit > 0 && len(out) > limit` guard skipped truncation for any
+// non-positive limit and returned every candidate instead of none.
 func (s *Store) ReconcileCandidates(_ context.Context, olderThan time.Duration, limit int) ([]store.Record, error) {
 	if s.FailAll != nil {
 		return nil, s.FailAll
+	}
+	limit, ok := clampLimit(limit)
+	if !ok {
+		return []store.Record{}, nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -524,7 +582,7 @@ func (s *Store) ReconcileCandidates(_ context.Context, olderThan time.Duration, 
 		}
 		return out[i].ID < out[j].ID
 	})
-	if limit > 0 && len(out) > limit {
+	if len(out) > limit {
 		out = out[:limit]
 	}
 	return cloneRecords(out), nil
@@ -631,16 +689,19 @@ func (s *Store) ListStations(_ context.Context, f store.StationFilter) ([]store.
 	}
 	sort.Slice(match, func(i, j int) bool { return match[i].StationID < match[j].StationID })
 
-	// Same Limit<=0 rule as RecordStore.List: zero or negative returns zero
-	// rows, never "unbounded." See that method's doc comment for why.
+	// f.Limit is clamped by clampLimit — same single enforcement point as
+	// RecordStore.List. See that method's doc comment for why a clamped limit
+	// does not short-circuit the whole method: Total must still report the
+	// full unpaged count.
 	total := int64(len(match))
-	if f.Limit <= 0 {
+	limit, ok := clampLimit(f.Limit)
+	if !ok {
 		return []store.Station{}, total, nil
 	}
 	if f.Offset >= len(match) {
 		return []store.Station{}, total, nil
 	}
-	end := f.Offset + f.Limit
+	end := f.Offset + limit
 	if end > len(match) {
 		end = len(match)
 	}

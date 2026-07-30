@@ -759,3 +759,215 @@ func ids(recs []store.Record) []string {
 	}
 	return out
 }
+
+// TestClaimPendingNonPositiveNReturnsZeroRows closes the regression-test gap
+// Task 8 deliberately deferred to Task 19's conformance suite: ClaimPending's
+// non-positive-n behavior was already correct (n <= 0 returns zero rows, a
+// nil error, never "unbounded") but had no committed fake-side test of its
+// own — only the postgres side did.
+func TestClaimPendingNonPositiveNReturnsZeroRows(t *testing.T) {
+	ctx := context.Background()
+	f := fake.New()
+	base := time.Date(2026, 4, 17, 15, 40, 0, 0, time.UTC)
+	if _, err := f.Insert(ctx, newRecord("p1", 1000, base)); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	for _, n := range []int{0, -1} {
+		recs, err := f.ClaimPending(ctx, n, uuid.Must(uuid.NewV7()))
+		if err != nil {
+			t.Fatalf("ClaimPending(n=%d): err = %v, want nil", n, err)
+		}
+		if recs == nil {
+			t.Fatalf("ClaimPending(n=%d) returned a nil slice, want a non-nil empty slice", n)
+		}
+		if len(recs) != 0 {
+			t.Fatalf("ClaimPending(n=%d) claimed %d rows, want 0", n, len(recs))
+		}
+	}
+
+	rec, err := f.Get(ctx, "p1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if rec.Status != store.StatusPending {
+		t.Fatalf("row status = %q after two non-positive-n claims, want an untouched pending", string(rec.Status))
+	}
+}
+
+// TestReapExpiredNonPositiveLimitReturnsZeroRowsAndDoesNotMutate is the
+// fake's half of the frozen non-positive-limit rule (see clampLimit's doc
+// comment in fake.go): interfaces.go bans "unbounded" for every limit-taking
+// method, and the fake's own ReapExpired violated it for a NEGATIVE limit
+// specifically. Its old `if len(out) == limit { break }` loop guard can
+// never equal a negative limit, so it reaped — and MUTATED — every stranded
+// row instead of none. limit == 0 happened to work by the same loop's
+// accident (len(out) starts at 0, which DOES equal 0), which is exactly the
+// kind of inconsistency a single clampLimit chokepoint removes rather than
+// leaving to happenstance.
+//
+// The row must be untouched, not merely "the returned slice is empty": the
+// old bug did not just fail to RETURN the stranded row for limit=-1, it
+// MUTATED it to pending with adopt_required set — a real side effect a
+// caller relying on the documented "zero rows, nothing written" contract
+// would never expect.
+func TestReapExpiredNonPositiveLimitReturnsZeroRowsAndDoesNotMutate(t *testing.T) {
+	ctx := context.Background()
+	f := fake.New()
+	claimedAt := time.Date(2026, 4, 17, 15, 40, 0, 0, time.UTC)
+	f.Now = func() time.Time { return claimedAt.Add(9 * time.Minute) }
+	ref := uuid.Must(uuid.NewV7())
+	f.SeedRecord(store.Record{
+		ID: "stranded", StationID: 1, Status: store.StatusProcessing,
+		ClaimedAt: &claimedAt, ClaimRef: &ref, CreatedAt: claimedAt,
+	})
+
+	for _, limit := range []int{0, -1} {
+		reaped, err := f.ReapExpired(ctx, 5*time.Minute, limit)
+		if err != nil {
+			t.Fatalf("ReapExpired(limit=%d): err = %v, want nil", limit, err)
+		}
+		if reaped == nil {
+			t.Fatalf("ReapExpired(limit=%d) returned a nil slice, want a non-nil empty slice", limit)
+		}
+		if len(reaped) != 0 {
+			t.Fatalf("ReapExpired(limit=%d) reaped %d rows, want 0", limit, len(reaped))
+		}
+	}
+
+	rec, err := f.Get(ctx, "stranded")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if rec.Status != store.StatusProcessing {
+		t.Fatalf("stranded row status = %q after two non-positive-limit reaps, want an untouched processing",
+			string(rec.Status))
+	}
+	if rec.AdoptRequired {
+		t.Fatal("stranded row got AdoptRequired=true from a non-positive-limit reap, want untouched")
+	}
+}
+
+// TestRequeueNonPositiveLimitReturnsZeroAndDoesNotWrite is Requeue's half of
+// the same rule: the old `if f.Limit > 0 && len(match) > f.Limit` guard
+// skipped truncation entirely for ANY non-positive limit (zero included,
+// unlike ReapExpired's accidental zero case), so both the DryRun count and
+// the real write touched EVERY matched row regardless of Limit. All four
+// combinations of {0, -1} x {write, DryRun} are covered, matching the
+// postgres side's own TestRequeueNonPositiveLimitNeverTouchesTheDatabase.
+func TestRequeueNonPositiveLimitReturnsZeroAndDoesNotWrite(t *testing.T) {
+	ctx := context.Background()
+	f := fake.New()
+	old := time.Date(2026, 4, 17, 13, 40, 0, 0, time.UTC)
+	f.SeedRecord(store.Record{
+		ID: "f1", StationID: 1000, Status: store.StatusFailed, Attempts: 5, CreatedAt: old,
+	})
+
+	for _, limit := range []int{0, -1} {
+		for _, dryRun := range []bool{false, true} {
+			n, err := f.Requeue(ctx, store.RequeueFilter{
+				Status: store.StatusFailed, Since: time.Hour, Limit: limit, DryRun: dryRun,
+			})
+			if err != nil {
+				t.Fatalf("Requeue(limit=%d, dryRun=%v): err = %v, want nil", limit, dryRun, err)
+			}
+			if n != 0 {
+				t.Fatalf("Requeue(limit=%d, dryRun=%v) = %d, want 0", limit, dryRun, n)
+			}
+		}
+	}
+
+	rec, err := f.Get(ctx, "f1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if rec.Status != store.StatusFailed {
+		t.Fatalf("row status = %q after four non-positive-limit requeues, want an untouched failed", string(rec.Status))
+	}
+	if rec.Attempts != 5 {
+		t.Fatalf("row attempts = %d, want an untouched 5", rec.Attempts)
+	}
+}
+
+// TestReconcileCandidatesNonPositiveLimitReturnsZeroRows is
+// ReconcileCandidates' half of the same rule: the old
+// `if limit > 0 && len(out) > limit` guard skipped truncation for any
+// non-positive limit and returned EVERY candidate instead of none.
+// ReconcileCandidates never mutates, so there is no side effect to check —
+// the zero-row, nil-error contract is the whole property, proven by a
+// subsequent real call still finding the untouched candidate.
+func TestReconcileCandidatesNonPositiveLimitReturnsZeroRows(t *testing.T) {
+	ctx := context.Background()
+	f := fake.New()
+	now := time.Date(2026, 4, 17, 15, 40, 0, 0, time.UTC)
+	f.Now = func() time.Time { return now }
+	processedAt := now.Add(-2 * time.Hour)
+	f.SeedRecord(store.Record{ID: "candidate", Status: store.StatusCompleted, ProcessedAt: &processedAt})
+
+	for _, limit := range []int{0, -1} {
+		cands, err := f.ReconcileCandidates(ctx, time.Hour, limit)
+		if err != nil {
+			t.Fatalf("ReconcileCandidates(limit=%d): err = %v, want nil", limit, err)
+		}
+		if cands == nil {
+			t.Fatalf("ReconcileCandidates(limit=%d) returned a nil slice, want a non-nil empty slice", limit)
+		}
+		if len(cands) != 0 {
+			t.Fatalf("ReconcileCandidates(limit=%d) returned %d rows, want 0", limit, len(cands))
+		}
+	}
+
+	cands, err := f.ReconcileCandidates(ctx, time.Hour, 100)
+	if err != nil {
+		t.Fatalf("ReconcileCandidates: %v", err)
+	}
+	if len(cands) != 1 || cands[0].ID != "candidate" {
+		t.Fatalf("candidates = %v, want exactly [candidate] (untouched by the two non-positive-limit calls)",
+			ids(cands))
+	}
+}
+
+// TestListAndListStationsNegativeLimitAlsoReturnsZeroRows extends the
+// existing TestListZeroLimitReturnsZeroRows, which only exercised Limit: 0.
+// List and ListStations were already correct for BOTH non-positive values
+// (`f.Limit <= 0`), but no committed test distinguished "correct because of
+// the <= 0 comparison" from "correct because 0 coincidentally behaves like
+// an unset limit," the same gap this round's audit closes for
+// ReapExpired/Requeue/ReconcileCandidates. Limit: -1 is what actually tells
+// them apart: a `== 0` or `> 0` comparison (the exact bug shape found
+// elsewhere in this file) would leak every row through for -1 while still
+// passing the Limit: 0 test.
+func TestListAndListStationsNegativeLimitAlsoReturnsZeroRows(t *testing.T) {
+	ctx := context.Background()
+	f := fake.New()
+	base := time.Date(2026, 4, 17, 15, 40, 0, 0, time.UTC)
+	for i, id := range []string{"a", "b", "c"} {
+		obs := base.Add(time.Duration(i) * time.Minute)
+		if _, err := f.Insert(ctx, newRecord(id, 1000, obs)); err != nil {
+			t.Fatalf("Insert: %v", err)
+		}
+	}
+	f.SeedStation(store.Station{StationID: 1000, IsActive: true})
+
+	recs, total, err := f.List(ctx, store.ListFilter{Limit: -1})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(recs) != 0 {
+		t.Fatalf("List(Limit:-1) returned %d rows, want 0", len(recs))
+	}
+	if total != 3 {
+		t.Fatalf("List(Limit:-1) total = %d, want 3 (Total ignores Limit)", total)
+	}
+
+	sts, total, err := f.Stations().List(ctx, store.StationFilter{Limit: -1})
+	if err != nil {
+		t.Fatalf("ListStations: %v", err)
+	}
+	if len(sts) != 0 {
+		t.Fatalf("ListStations(Limit:-1) returned %d rows, want 0", len(sts))
+	}
+	if total != 1 {
+		t.Fatalf("ListStations(Limit:-1) total = %d, want 1", total)
+	}
+}
