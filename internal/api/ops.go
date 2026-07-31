@@ -32,10 +32,24 @@ type opsResponse struct {
 
 	// Stale names every field above whose value is STRUCTURALLY unreachable in
 	// the shipped code, so a zero there means "not implemented" rather than
-	// "nothing happened". Today it is exactly ["abortedCount"]: the frozen
-	// store.RecordStore has no method that can write chain_status 'aborted'
-	// (B1's handover, item 7), so Snapshot.AbortedCount is a bucket that was
-	// individually proven wired and that nothing can increment.
+	// "nothing happened".
+	//
+	// It is DERIVED FROM THE SNAPSHOT AT REQUEST TIME, not a static list: a
+	// static var passed the round-trip once but never noticed the field going
+	// live, because nothing tied its contents to snap.AbortedCount actually
+	// being nonzero. "abortedCount" is included here if and only if
+	// snap.AbortedCount == 0. The frozen store.RecordStore has no method today
+	// that can write chain_status 'aborted' (B1's handover, item 7), so in the
+	// shipped code AbortedCount is always 0 and this is always ["abortedCount"]
+	// — but the moment Plan C widens RecordStore, wires the write path AND a
+	// snapshot actually observes a nonzero count, this marker removes itself
+	// with no code change required and no chance of a human forgetting to
+	// delete a stale entry.
+	//
+	// Never omitted and never null: it is built with make(..., 0, ...) even
+	// when it ends up empty, so an all-live snapshot still emits "stale":[]
+	// rather than dropping the key or emitting null — the same "present and
+	// explicit" rule the rest of this response follows.
 	//
 	// Rendering a permanently-zero field as if it were live is worse than
 	// omitting it, because a zero reads as an affirmative all-clear to both an
@@ -43,11 +57,22 @@ type opsResponse struct {
 	Stale []string `json:"stale"`
 }
 
-// staleOpsFields is the list. When Plan C widens RecordStore so an aborted
-// transition becomes writable, DELETE the entry — and
-// TestOpsStaleListNamesAbortedCount will fail until somebody does, which is
-// the point of pinning it exactly.
-var staleOpsFields = []string{"abortedCount"}
+// staleAbortedCountName is the one spelling of the field name shared by the
+// response and the derivation below, so the two can never drift.
+const staleAbortedCountName = "abortedCount"
+
+// staleOpsFields derives the stale marker list from the values actually
+// observed in snap. Today AbortedCount is structurally always 0, so this
+// always returns ["abortedCount"] in the shipped code — but the derivation
+// is what makes that conditional on the DATA rather than on a static
+// constant nobody is obligated to update.
+func staleOpsFields(snap store.Snapshot) []string {
+	stale := make([]string, 0, 1)
+	if snap.AbortedCount == 0 {
+		stale = append(stale, staleAbortedCountName)
+	}
+	return stale
+}
 
 // handleOps serves GET /api/ops on the OPS listener.
 //
@@ -70,9 +95,6 @@ func handleOps(recs store.RecordStore, sts store.StationStore, h *Hub) http.Hand
 			return
 		}
 
-		stale := make([]string, len(staleOpsFields))
-		copy(stale, staleOpsFields)
-
 		writeJSON(w, r, http.StatusOK, opsResponse{
 			PendingRows:             snap.PendingRows,
 			ProcessingRows:          snap.ProcessingRows,
@@ -85,7 +107,7 @@ func handleOps(recs store.RecordStore, sts store.StationStore, h *Hub) http.Hand
 			TotalTx:        stats.TotalTx,
 			SSEClients:     h.Clients(),
 
-			Stale: stale,
+			Stale: staleOpsFields(snap),
 		})
 	}
 }

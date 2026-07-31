@@ -211,26 +211,13 @@ func TestOpsSSEClientsReflectsTheHub(t *testing.T) {
 	}
 }
 
-// TestOpsStaleListNamesAbortedCount asserts stale deep-equals
-// []string{"abortedCount"} EXACTLY, not "contains".
-//
-// This test is DESIGNED TO FAIL when Plan C widens RecordStore so a
-// chain_status 'aborted' transition becomes writable and Snapshot.AbortedCount
-// stops being structurally unreachable. That failure is correct: it forces
-// the "abortedCount" entry to be removed from staleOpsFields rather than left
-// lying about a field that is live again. A future worker who sees this test
-// red should delete the stale entry, not this test.
-//
-// Mutation check: delete the Stale field from opsResponse (or stop populating
-// it). This test must fail.
-func TestOpsStaleListNamesAbortedCount(t *testing.T) {
-	recs := stubRecordStore{snap: opsFixtureSnapshot}
-	sts := stubStationStore{stats: opsFixtureStats}
-	h := opsFixtureHub(t)
-
-	rec := doOpsRequest(t, recs, sts, h)
-	m, _ := decodeOpsBody(t, rec)
-
+// decodeStale extracts the "stale" field as []string, failing the test if it
+// is missing, the wrong shape, or contains a non-string entry. It never
+// returns nil for an empty list: callers get make([]string, 0), matching
+// what json.Unmarshal produces for a present "[]" and letting a caller
+// distinguish that from an absent/null key at the raw-map level separately.
+func decodeStale(t *testing.T, m map[string]any) []string {
+	t.Helper()
 	rawStale, ok := m["stale"].([]any)
 	if !ok {
 		t.Fatalf("stale field missing or wrong shape: %v", m["stale"])
@@ -243,7 +230,11 @@ func TestOpsStaleListNamesAbortedCount(t *testing.T) {
 		}
 		got = append(got, s)
 	}
-	want := []string{"abortedCount"}
+	return got
+}
+
+func assertStringSliceEqual(t *testing.T, got, want []string) {
+	t.Helper()
 	if len(got) != len(want) {
 		t.Fatalf("stale = %v, want exactly %v", got, want)
 	}
@@ -251,6 +242,69 @@ func TestOpsStaleListNamesAbortedCount(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("stale = %v, want exactly %v", got, want)
 		}
+	}
+}
+
+// TestOpsStaleListNamesAbortedCount asserts stale deep-equals
+// []string{"abortedCount"} EXACTLY, not "contains", for a Snapshot whose
+// AbortedCount is 0 — the shipped-code case, since the frozen RecordStore has
+// no path that can write chain_status 'aborted' today.
+//
+// This test is DESIGNED TO FAIL once a Snapshot with a NONZERO AbortedCount
+// is what production actually observes: staleOpsFields is now DERIVED from
+// snap.AbortedCount, so the marker disappears automatically the moment the
+// data says the bucket is live — see TestOpsStaleOmitsAbortedCountWhenLive,
+// which pins the other direction. A future worker who sees only the OTHER
+// test (the live one) failing, with THIS one still green on a zero fixture,
+// should read that as correct: the two together are the whole gate, not a
+// pair where one going red is unconditionally the "right" outcome.
+//
+// Mutation check: delete the Stale field from opsResponse (or stop populating
+// it). This test must fail.
+func TestOpsStaleListNamesAbortedCount(t *testing.T) {
+	recs := stubRecordStore{snap: opsFixtureSnapshot} // AbortedCount: 0
+	sts := stubStationStore{stats: opsFixtureStats}
+	h := opsFixtureHub(t)
+
+	rec := doOpsRequest(t, recs, sts, h)
+	m, _ := decodeOpsBody(t, rec)
+
+	assertStringSliceEqual(t, decodeStale(t, m), []string{"abortedCount"})
+}
+
+// TestOpsStaleOmitsAbortedCountWhenLive is the direction
+// TestOpsStaleListNamesAbortedCount alone could not catch: a Snapshot
+// reporting a NONZERO AbortedCount — simulating Plan C's write path actually
+// being exercised — must NOT carry "abortedCount" in stale, because the
+// field is demonstrably being counted at that point and marking it stale
+// would then be the OPPOSITE lie the brief warns about (an operator told a
+// live counter is unimplemented). With AbortedCount the only field this
+// package ever marks stale, the list must come back empty — asserted as
+// exactly []string{}, not nil and not absent, since opsResponse.Stale has no
+// omitempty and json.Marshal on the make([]string, 0, ...) staleOpsFields
+// builds must emit "[]", never "null".
+//
+// Mutation check: revert staleOpsFields to the static
+// []string{"abortedCount"} var (ignoring snap entirely) and set
+// opsFixtureSnapshot.AbortedCount to a nonzero value. This test must fail.
+func TestOpsStaleOmitsAbortedCountWhenLive(t *testing.T) {
+	live := opsFixtureSnapshot
+	live.AbortedCount = 77 // nonzero: simulates Plan C's write path firing.
+
+	recs := stubRecordStore{snap: live}
+	sts := stubStationStore{stats: opsFixtureStats}
+	h := opsFixtureHub(t)
+
+	rec := doOpsRequest(t, recs, sts, h)
+	m, raw := decodeOpsBody(t, rec)
+
+	got := decodeStale(t, m)
+	assertStringSliceEqual(t, got, []string{})
+
+	// Belt-and-suspenders on the wire shape itself: "stale":[] must appear
+	// literally in the raw JSON, never "stale":null.
+	if strings.Contains(string(raw), `"stale":null`) {
+		t.Errorf("stale serialized as null, want []: %s", raw)
 	}
 }
 
