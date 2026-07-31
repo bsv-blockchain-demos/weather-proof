@@ -53,6 +53,10 @@ func testDeps(t *testing.T) Deps {
 		Now:      func() time.Time { return routerFixedNow },
 		PollRate: time.Minute,
 		Logger:   slog.Default(),
+
+		// 60 is PROOF_RATE_LIMIT_PER_MIN's default, written as a literal here so
+		// a test that cares about the proof scope's number sets its own.
+		ProofRateLimitPerMin: 60,
 	}
 }
 
@@ -328,6 +332,21 @@ func TestRouterPatternInventoryIsExactlyTheExpectedSet(t *testing.T) {
 		rec := doGet(t, h, target)
 		if rec.Code < 200 || rec.Code >= 300 {
 			t.Errorf("%s: got status %d, want 2xx", target, rec.Code)
+		}
+	}
+
+	// The routes whose handlers belong to a later task answer 501 through their
+	// placeholder, which is still proof the PATTERN is registered and therefore
+	// that its limiter scope is live. A 404 here would mean an unlimited scope
+	// shipped.
+	placeholders := []string{
+		pathHealth, pathReady, pathEvents,
+		"/api/proof/" + strings.Repeat("ab", 32),
+	}
+	for _, target := range placeholders {
+		rec := doGet(t, h, target)
+		if rec.Code != http.StatusNotImplemented {
+			t.Errorf("%s: got status %d, want 501 (registered, handler pending)", target, rec.Code)
 		}
 	}
 

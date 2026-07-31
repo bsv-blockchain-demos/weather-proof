@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/bsv-blockchain-demos/weather-proof/internal/config"
+	"github.com/bsv-blockchain-demos/weather-proof/internal/ratelimit"
 	"github.com/bsv-blockchain-demos/weather-proof/internal/store"
 )
 
@@ -21,6 +22,16 @@ type Deps struct {
 	// Trusted is the parsed TRUSTED_PROXY_CIDRS list (Task 3). The zero value
 	// means trust nothing, which is the correct fail-closed default.
 	Trusted config.TrustedProxies
+
+	// ProofRateLimitPerMin is config.Config.ProofRateLimitPerMin, the
+	// GET /api/proof/{txid} scope's per-minute ceiling. A value below 1 is
+	// coerced to proofDefaultLimitPerMin by newLimiters, because zero on an
+	// unauthenticated outbound proxy would mean unlimited rather than disabled.
+	//
+	// The limiters themselves are NOT a Deps field: NewRouter constructs them,
+	// so every router owns its own four buckets and no two routers — in
+	// production or across tests — can share limiter state.
+	ProofRateLimitPerMin int
 }
 
 // onlyGET wraps a handler so that any method other than GET answers the JSON
@@ -30,9 +41,16 @@ type Deps struct {
 // pattern WITHOUT a method prefix (e.g. "/api/weather" rather than
 // "GET /api/weather") and branching here is what produces a JSON body.
 func onlyGET(h http.HandlerFunc) http.HandlerFunc {
+	return onlyMethod(http.MethodGet, h)
+}
+
+// onlyMethod is onlyGET generalized to one other verb: POST /api/verify is the
+// only non-GET route in the API, and it needs the same JSON 405 shape with its
+// OWN Allow value rather than a hardcoded GET.
+func onlyMethod(method string, h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			methodNotAllowedJSON(w, r)
+		if r.Method != method {
+			methodNotAllowedJSON(w, r, method)
 			return
 		}
 		h(w, r)
@@ -49,8 +67,8 @@ func notFoundJSON(w http.ResponseWriter, r *http.Request) {
 // methodNotAllowedJSON answers a method mismatch on a known path the same
 // way. It sets the Allow header itself, since it never reaches
 // net/http.ServeMux's own 405 handling (see onlyGET).
-func methodNotAllowedJSON(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Allow", http.MethodGet)
+func methodNotAllowedJSON(w http.ResponseWriter, r *http.Request, allowed string) {
+	w.Header().Set("Allow", allowed)
 	writeError(w, r, http.StatusMethodNotAllowed, "method not allowed")
 }
 
@@ -78,19 +96,52 @@ func methodNotAllowedJSON(w http.ResponseWriter, r *http.Request) {
 func NewRouter(d Deps) http.Handler {
 	mux := http.NewServeMux()
 
-	weatherList := onlyGET(handleWeatherList(d.Store.Records))
-	weatherDetail := onlyGET(handleWeatherDetail(d.Store.Records))
-	stationList := onlyGET(handleStationList(d.Store.Stations, d.Now, d.PollRate))
-	stationDetail := onlyGET(handleStationDetail(d.Store.Stations, d.Now, d.PollRate))
+	lim := newLimiters(d.ProofRateLimitPerMin, d.Now)
+	res := ratelimit.Resolver{Trusted: d.Trusted}
 
-	mux.HandleFunc("/api/weather", weatherList)
-	mux.HandleFunc("/api/weather/{$}", weatherList)
-	mux.HandleFunc("/api/weather/{id}", weatherDetail)
+	// ── 1-2. THE EXEMPTION SEAM. Everything registered in this block is
+	// registered WITHOUT withLimit and must stay that way: a liveness probe
+	// that can be rate-limited turns a traffic spike into a pod restart (spec
+	// §6.0 control 3). handleProbeStandIn is Task 19's replacement site — swap
+	// the handler here, do not add a second registration and do not move these
+	// two lines below the limited routes. /api/ops is not in this list at all:
+	// it lives on the ops server (Task 20/21) and is therefore exempt by
+	// construction, which is stronger than exempt by registration order.
+	//
+	// Pinned by TestHealthAndReadyAreNeverLimited and
+	// TestHealthAndReadyDoNotConsumeAnyBucket.
+	mux.HandleFunc(pathHealth, onlyGET(handleProbeStandIn))
+	mux.HandleFunc(pathReady, onlyGET(handleProbeStandIn))
 
-	mux.HandleFunc("/api/stations", stationList)
-	mux.HandleFunc("/api/stations/{$}", stationList)
-	mux.HandleFunc("/api/stations/{stationId}", stationDetail)
+	// ── 3. SSE. Its own scope, and markSSEExempt inside the limiter so a 429 —
+	// an ordinary short response — still gets the write deadline while the
+	// stream itself does not. Task 18 replaces the handler here.
+	mux.Handle(pathEvents, withLimit(lim.sse, res)(markSSEExempt(onlyGET(handleNotImplemented))))
 
+	// ── 4-5. The two scopes whose HANDLERS are B3's. The scopes are wired and
+	// tested now because a scope wired later is a scope that ships unlimited.
+	// B3 replaces handleNotImplemented at these two lines.
+	mux.Handle(pathVerify, withLimit(lim.verify, res)(onlyMethod(http.MethodPost, handleNotImplemented)))
+	mux.Handle("/api/proof/{txid}", withLimit(lim.proof, res)(onlyGET(handleNotImplemented)))
+
+	// ── 6. The four read routes and their {$} twins, all on the general scope.
+	general := withLimit(lim.general, res)
+
+	weatherList := general(onlyGET(handleWeatherList(d.Store.Records)))
+	weatherDetail := general(onlyGET(handleWeatherDetail(d.Store.Records)))
+	stationList := general(onlyGET(handleStationList(d.Store.Stations, d.Now, d.PollRate)))
+	stationDetail := general(onlyGET(handleStationDetail(d.Store.Stations, d.Now, d.PollRate)))
+
+	mux.Handle(pathWeather, weatherList)
+	mux.Handle(pathWeather+"/{$}", weatherList)
+	mux.Handle(pathWeather+"/{id}", weatherDetail)
+
+	mux.Handle(pathStations, stationList)
+	mux.Handle(pathStations+"/{$}", stationList)
+	mux.Handle(pathStations+"/{stationId}", stationDetail)
+
+	// ── 7. The catch-all 404, NOT limited: a limiter here would let an
+	// unrouted path exhaust a real client's bucket.
 	mux.HandleFunc("/", notFoundJSON)
 
 	return withRequestID(withSecurityHeaders(withRecover(d.Logger)(withWriteDeadline(d.Logger)(mux))))
