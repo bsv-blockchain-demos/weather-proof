@@ -28,8 +28,8 @@ deploy burns the whole 5 s shutdown budget silently.
 | `GET /api/stations` (and `/api/stations/`) | API | general | `{"stats":{…},"stations":[…],"pagination":{…}}` (spec §13.3) |
 | `GET /api/stations/{stationId}` | API | general | bare `stationSummary`, the same nine fields, unwrapped (spec §13.4) |
 | `GET /api/events` | API | sse | `text/event-stream`, see below (spec §13.7) |
-| `POST /api/verify` | API | verify | **501** `{"error":"not implemented"}` until B3 |
-| `GET /api/proof/{txid}` | API | proof | **501** `{"error":"not implemented"}` until B3 |
+| `POST /api/verify` | API | verify | **501** `{"error":"not implemented","request_id":"…"}` until B3 |
+| `GET /api/proof/{txid}` | API | proof | **501** `{"error":"not implemented","request_id":"…"}` until B3 |
 | `GET /api/health` | API | **none** | `{"status":"ok","timestamp":"…"}` — always 200 |
 | `GET /api/ready` | API | **none** | `{"status":"ok"}` / 503 `{"status":"unavailable"}` |
 | `GET /api/ops` | **Ops** | none (port-separated) | see "The ops snapshot" below |
@@ -135,15 +135,21 @@ Three 429 bodies exist and they are deliberately distinct, so a log line says wh
 
 ## Error bodies
 
-Exactly two shapes, and no third:
+Exactly two ERROR shapes, and no third. (The probe bodies `{"status":"ok"}` and `{"status":"unavailable"}` are
+not error DTOs at all — `/api/ready`'s 503 is the one 5xx in the API whose body is a probe body rather than an
+error DTO, and it deliberately carries no detail and no id. Everything else that fails uses one of these two.)
 
 ```jsonc
 // every 4xx — exactly ONE key, always
 {"error": "Weather record not found"}
 
-// every 5xx — the fixed message plus a correlation id
+// every 5xx that is an error body — the message plus a correlation id
 {"error": "internal server error", "request_id": "0197f0…"}
 ```
+
+The message varies only where the spec pins it; the correlation id never varies in shape and is never absent.
+**The 501 placeholders are 5xx and therefore carry a `request_id` too:** every status >= 500 goes through the
+same writer, so the real body is `{"error":"not implemented","request_id":"…"}`.
 
 `clientErrorDTO` structurally cannot carry a second key, and `serverErrorDTO.RequestID` is a plain `string`, so
 a 500 can never ship without an id. The 400/404 messages the spec pins verbatim are `Weather record not found`,
@@ -152,7 +158,9 @@ a 500 can never ship without an id. The 400/404 messages the spec pins verbatim 
 
 **No error is ever formatted into a body.** `store.ErrNotFound` → 404, `store.ErrConflict` → 409, and
 **everything else** → the opaque 500 above, with the real error logged through `slog` at error level with the
-request id. A `*pgconn.PgError`'s `Error()` carries the SQLSTATE, and the struct carries `Detail`, `Hint`,
+request id. That log line is emitted by the single 5xx writer itself, not by the handlers, so a new 500 call site
+cannot ship without it; the id in the log record is the same string the body carries. `/api/ready`'s 503 logs its
+ping failure the same way. A `*pgconn.PgError`'s `Error()` carries the SQLSTATE, and the struct carries `Detail`, `Hint`,
 `ConstraintName`, `ColumnName` and `TableName`; none of it may reach a client.
 
 `X-Request-Id` is on every response. An **inbound** `X-Request-Id` is ignored entirely: a caller-chosen id lets
