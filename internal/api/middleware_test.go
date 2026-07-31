@@ -13,6 +13,8 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+
+	"github.com/bsv-blockchain-demos/weather-proof/internal/store"
 )
 
 func TestWithRequestIDSetsTheHeader(t *testing.T) {
@@ -309,4 +311,197 @@ func TestFiveHundredBodiesAlwaysCarryARequestID(t *testing.T) {
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+func assertSecurityHeaders(t *testing.T, h http.Header) {
+	t.Helper()
+	if got := h.Get(headerContentTypeOptions); got != valueNoSniff {
+		t.Errorf("%s = %q, want %q", headerContentTypeOptions, got, valueNoSniff)
+	}
+	if got := h.Get(headerFrameOptions); got != valueDeny {
+		t.Errorf("%s = %q, want %q", headerFrameOptions, got, valueDeny)
+	}
+	if got := h.Get(headerReferrerPolicy); got != valueNoReferrer {
+		t.Errorf("%s = %q, want %q", headerReferrerPolicy, got, valueNoReferrer)
+	}
+}
+
+func TestSecurityHeadersOnASuccessfulResponse(t *testing.T) {
+	handler := withSecurityHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	handler.ServeHTTP(rec, req)
+	assertSecurityHeaders(t, rec.Header())
+}
+
+func TestSecurityHeadersOnAFourHundred(t *testing.T) {
+	handler := withSecurityHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, r, http.StatusBadRequest, "bad request")
+	}))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+	assertSecurityHeaders(t, rec.Header())
+}
+
+// errRecordStore embeds a nil store.RecordStore so it satisfies the
+// interface via promotion, and overrides only List to return an opaque
+// error (as opposed to panicRecordStore, which panics). Used to drive the
+// "store failure" 500, distinct from the "handler panics" 500.
+type errRecordStore struct {
+	store.RecordStore
+}
+
+func (errRecordStore) List(_ context.Context, _ store.ListFilter) ([]store.Record, int64, error) {
+	return nil, 0, errors.New(panicMsg)
+}
+
+// TestSecurityHeadersOnAFiveHundred drives a panic THROUGH NewRouter itself,
+// not a hand-composed chain — the panic path is the one that skips a
+// middleware installed inside the recovery, so only the router's real
+// wiring can catch that mutation. See TestNewRouterOrdersRequestIDOutsideRecovery
+// for the analogous reasoning for withRequestID.
+func TestSecurityHeadersOnAFiveHundred(t *testing.T) {
+	d := testDeps(t)
+	d.Store.Records = panicRecordStore{}
+	h := NewRouter(d)
+	rec := doGet(t, h, "/api/weather")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", rec.Code)
+	}
+	assertSecurityHeaders(t, rec.Header())
+}
+
+// TestSecurityHeadersOnAFiveHundredFromAStoreFailure is the 500 sibling that
+// TestSecurityHeadersOnAFiveHundred does not cover: an ordinary error
+// returned by the store (mapped to an opaque 500 by statusForStoreError),
+// as opposed to a panic recovered by withRecover.
+func TestSecurityHeadersOnAFiveHundredFromAStoreFailure(t *testing.T) {
+	d := testDeps(t)
+	d.Store.Records = errRecordStore{}
+	h := NewRouter(d)
+	rec := doGet(t, h, "/api/weather")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", rec.Code)
+	}
+	assertSecurityHeaders(t, rec.Header())
+}
+
+func TestSecurityHeadersOnAJSON404(t *testing.T) {
+	h := NewRouter(testDeps(t))
+	rec := doGet(t, h, "/api/nope")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+	assertSecurityHeaders(t, rec.Header())
+}
+
+func TestSecurityHeadersOnAJSON405(t *testing.T) {
+	h := NewRouter(testDeps(t))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/weather", nil)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", rec.Code)
+	}
+	assertSecurityHeaders(t, rec.Header())
+}
+
+// TestSecurityHeadersOnEveryRegisteredRoute is a table over all eight read
+// patterns plus the 404 and 405 cases, driven through NewRouter. Ten rows,
+// and the test asserts it visited ten — a table-driven sweep that silently
+// iterated an empty slice is precisely the vacuous-gate shape this guards
+// against.
+func TestSecurityHeadersOnEveryRegisteredRoute(t *testing.T) {
+	cases := []struct {
+		name   string
+		method string
+		target string
+		want   int
+	}{
+		{"weather list", http.MethodGet, "/api/weather", http.StatusOK},
+		{"weather list trailing slash", http.MethodGet, "/api/weather/", http.StatusOK},
+		{"weather detail", http.MethodGet, "/api/weather/" + routerSeededWeatherID, http.StatusOK},
+		{"stations list", http.MethodGet, "/api/stations", http.StatusOK},
+		{"stations list trailing slash", http.MethodGet, "/api/stations/", http.StatusOK},
+		{"stations detail", http.MethodGet, "/api/stations/42", http.StatusOK},
+		{"weather list bare question mark", http.MethodGet, "/api/weather?", http.StatusOK},
+		{"stations list bare question mark", http.MethodGet, "/api/stations?", http.StatusOK},
+		{"unrouted path", http.MethodGet, "/api/nope", http.StatusNotFound},
+		{"wrong method", http.MethodPost, "/api/weather", http.StatusMethodNotAllowed},
+	}
+
+	h := NewRouter(testDeps(t))
+	visited := 0
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			visited++
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequestWithContext(context.Background(), tc.method, tc.target, nil)
+			h.ServeHTTP(rec, req)
+			if rec.Code != tc.want {
+				t.Fatalf("expected %d, got %d", tc.want, rec.Code)
+			}
+			assertSecurityHeaders(t, rec.Header())
+		})
+	}
+	if visited != len(cases) {
+		t.Fatalf("expected to visit %d cases, visited %d", len(cases), visited)
+	}
+	if visited != 10 {
+		t.Fatalf("expected exactly 10 cases, got %d", visited)
+	}
+}
+
+// TestSecurityHeadersAreSetBeforeTheHandlerWrites is the ordering assertion.
+// It must go over a real network connection: httptest.NewRecorder does not
+// enforce net/http's "headers written after WriteHeader are silent no-ops"
+// semantics (its Header() map is mutable at any time), so only a real
+// http.Server, exercised via httptest.NewServer, can catch a middleware that
+// sets headers after calling next.ServeHTTP.
+func TestSecurityHeadersAreSetBeforeTheHandlerWrites(t *testing.T) {
+	handler := withSecurityHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL, nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", resp.StatusCode)
+	}
+	assertSecurityHeaders(t, resp.Header)
+}
+
+func TestSecurityHeaderValuesAreExact(t *testing.T) {
+	handler := withSecurityHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	handler.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get(headerContentTypeOptions); got != "nosniff" {
+		t.Errorf("%s = %q, want %q", headerContentTypeOptions, got, "nosniff")
+	}
+	if got := rec.Header().Get(headerFrameOptions); got != "DENY" {
+		t.Errorf("%s = %q, want %q", headerFrameOptions, got, "DENY")
+	}
+	if got := rec.Header().Get(headerReferrerPolicy); got != "no-referrer" {
+		t.Errorf("%s = %q, want %q", headerReferrerPolicy, got, "no-referrer")
+	}
 }

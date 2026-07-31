@@ -16,6 +16,37 @@ import (
 // also what an operator greps for when a user reports a 500.
 const requestIDHeader = "X-Request-Id"
 
+// The three headers of spec §6.0 control 19. The TypeScript has NONE of them;
+// this is a beyond-parity control and it is in the acceptance gate
+// specifically so it cannot quietly not ship.
+const (
+	headerContentTypeOptions = "X-Content-Type-Options"
+	headerFrameOptions       = "X-Frame-Options"
+	headerReferrerPolicy     = "Referrer-Policy"
+
+	valueNoSniff    = "nosniff"
+	valueDeny       = "DENY"
+	valueNoReferrer = "no-referrer"
+)
+
+// withSecurityHeaders sets all three on EVERY response, including error
+// responses and including the SSE stream. It sets them before calling next, so
+// a handler that writes a status immediately still carries them — headers set
+// after WriteHeader are silently dropped.
+//
+// No CSP here: spec §6.6 puts the CSP on the frontend nginx, and an API that
+// serves no HTML gains nothing from one. No HSTS either — TLS terminates at
+// Cloudflare and an HSTS header from the origin is at best redundant and at
+// worst wrong for an in-cluster caller. Both omissions are deliberate.
+func withSecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(headerContentTypeOptions, valueNoSniff)
+		w.Header().Set(headerFrameOptions, valueDeny)
+		w.Header().Set(headerReferrerPolicy, valueNoReferrer)
+		next.ServeHTTP(w, r)
+	})
+}
+
 // requestIDKey is the context key type. A named unexported struct type
 // rather than a string, so no other package can collide with it.
 type requestIDKey struct{}
