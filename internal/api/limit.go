@@ -74,6 +74,7 @@ const (
 	pathVerify   = "/api/verify"
 	pathWeather  = "/api/weather"
 	pathStations = "/api/stations"
+	pathOps      = "/api/ops"
 )
 
 // limiters holds one Limiter per SCOPE. The scopes are DISJOINT: a request

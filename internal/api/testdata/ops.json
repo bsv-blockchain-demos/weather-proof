@@ -1,0 +1,14 @@
+{
+  "pendingRows": 11,
+  "processingRows": 22,
+  "failedRows": 33,
+  "stillUnminedOlderThan1h": 44,
+  "minedCount": 55,
+  "abortedCount": 0,
+  "activeStations": 19,
+  "totalTx": 2701,
+  "sseClients": 3,
+  "stale": [
+    "abortedCount"
+  ]
+}
