@@ -164,12 +164,20 @@ func TestRouterAnswersAnUnknownPathWithJSON404(t *testing.T) {
 func TestRouterAnswersAWrongMethodWithJSON405(t *testing.T) {
 	h := NewRouter(testDeps(t))
 
+	// wantAllow is per case, not a shared http.MethodGet: POST /api/verify is
+	// the API's only non-GET route and an "Allow: GET" there would tell a
+	// client to retry with the one verb that cannot work. Without a case whose
+	// expectation differs, onlyMethod's whole generalization is unasserted —
+	// hardcoding http.MethodGet at methodNotAllowedJSON's call site left the
+	// suite green.
 	cases := []struct {
-		method string
-		target string
+		method    string
+		target    string
+		wantAllow string
 	}{
-		{http.MethodPost, "/api/weather"},
-		{http.MethodDelete, "/api/stations/1"},
+		{http.MethodPost, "/api/weather", http.MethodGet},
+		{http.MethodDelete, "/api/stations/1", http.MethodGet},
+		{http.MethodGet, pathVerify, http.MethodPost},
 	}
 	for _, c := range cases {
 		req := httptest.NewRequestWithContext(context.Background(), c.method, c.target, nil)
@@ -182,8 +190,8 @@ func TestRouterAnswersAWrongMethodWithJSON405(t *testing.T) {
 		if ct := rec.Header().Get("Content-Type"); ct != contentTypeJSON {
 			t.Errorf("%s %s: got Content-Type %q, want %q", c.method, c.target, ct, contentTypeJSON)
 		}
-		if allow := rec.Header().Get("Allow"); allow != http.MethodGet {
-			t.Errorf("%s %s: got Allow %q, want %q", c.method, c.target, allow, http.MethodGet)
+		if allow := rec.Header().Get("Allow"); allow != c.wantAllow {
+			t.Errorf("%s %s: got Allow %q, want %q", c.method, c.target, allow, c.wantAllow)
 		}
 		var body clientErrorDTO
 		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {

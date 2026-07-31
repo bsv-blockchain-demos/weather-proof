@@ -544,6 +544,75 @@ func TestTheScopeNumbersMatchTheSpec(t *testing.T) {
 	}
 }
 
+// advancingClock returns a clock that moves forward by step on every call. It
+// is what makes a window's remainder FRACTIONAL at the moment of a refusal,
+// which is how the Retry-After ceiling becomes observable end to end: with a
+// frozen clock the remainder is a whole 60 s and a floor and a ceiling agree.
+func advancingClock(start time.Time, step time.Duration) func() time.Time {
+	calls := 0
+	return func() time.Time {
+		now := start.Add(time.Duration(calls) * step)
+		calls++
+		return now
+	}
+}
+
+// TestRefusalRetryAfterIsRoundedUpEndToEnd pins the ceiling through the real
+// router. The clock advances 1 ms per call, so by the time the verify bucket
+// refuses ~60 ms of the 60 s window has elapsed and the true remainder is
+// ~59.94 s: a ceiling reports 60 and a truncation reports 59. Both the
+// expected value and the rounding direction are literals.
+//
+// The verify scope is used rather than the general one because 61 requests pin
+// the same property as 721 and keep the package's wall clock where it is.
+func TestRefusalRetryAfterIsRoundedUpEndToEnd(t *testing.T) {
+	h := limitRouter(t, func(d *Deps) {
+		d.Now = advancingClock(routerFixedNow, time.Millisecond)
+	})
+
+	exhaust(t, h, http.MethodPost, pathVerify, limitPeerA, nil)
+
+	rec := do(t, h, http.MethodPost, pathVerify, limitPeerA, nil)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("got status %d, want 429", rec.Code)
+	}
+	if got := rec.Header().Get(headerRetryAfter); got != "60" {
+		t.Errorf("%s = %q with a fractional remainder, want %q — a truncation reports 59",
+			headerRetryAfter, got, "60")
+	}
+	if got := rec.Header().Get(headerRateLimitReset); got != "60" {
+		t.Errorf("%s = %q with a fractional remainder, want %q", headerRateLimitReset, got, "60")
+	}
+}
+
+// TestAWrongMethodOnALimitedPathStillCostsASlot pins the documented choice at
+// withLimit's Allow call: the bucket is charged before the method check, so a
+// free 405 cannot be used to probe a limited path unmetered.
+func TestAWrongMethodOnALimitedPathStillCostsASlot(t *testing.T) {
+	h := limitRouter(t, nil)
+
+	rec405 := do(t, h, http.MethodPost, pathWeather, limitPeerA, nil)
+	if rec405.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST %s: got status %d, want 405", pathWeather, rec405.Code)
+	}
+	// The 405 itself carries the headers, which is the first half of "it was
+	// charged".
+	if got := remainingOf(t, rec405); got != generalCapacity-1 {
+		t.Errorf("405 response's %s = %d, want %d", headerRateLimitRemaining, got, generalCapacity-1)
+	}
+
+	// The second half, measured independently: the NEXT well-formed request sees
+	// a bucket that is two down, not one.
+	rec := do(t, h, http.MethodGet, pathWeather, limitPeerA, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got status %d, want 200", rec.Code)
+	}
+	if got := remainingOf(t, rec); got != generalCapacity-2 {
+		t.Errorf("%s = %d after one 405 and one 200, want %d: the 405 was served free",
+			headerRateLimitRemaining, got, generalCapacity-2)
+	}
+}
+
 // TestSecondsCeilRoundsUpSoRetryAfterIsNeverZero pins the ROUNDING directly.
 // It cannot be pinned through a response with the suite's frozen clock, where
 // a window's remainder is always a whole 60 seconds and a floor and a ceiling

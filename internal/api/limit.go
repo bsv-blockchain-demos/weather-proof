@@ -125,6 +125,13 @@ func newLimiters(proofPerMin int, now func() time.Time) *limiters {
 func withLimit(l *ratelimit.Limiter, res ratelimit.Resolver) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// The bucket is charged HERE, before onlyMethod's check runs inside
+			// next, so a WRONG-METHOD request to a limited path still costs a
+			// slot. That is deliberate: the pattern is registered, the request
+			// reached a real route, and a free 405 on every limited path would be
+			// an unmetered way to probe the API. The cost is that a client with a
+			// broken verb burns its own budget, which is the safe direction.
+			// Pinned by TestAWrongMethodOnALimitedPathStillCostsASlot.
 			d := l.Allow(res.Key(r))
 
 			w.Header().Set(headerRateLimitLimit, strconv.Itoa(d.Limit))
