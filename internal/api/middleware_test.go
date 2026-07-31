@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -683,6 +684,119 @@ func TestSSEExemptFlagDoesNotLeakToTheNextRequest(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for the ordinary handler")
 	}
+}
+
+// TestWriteDeadlineSupportedThroughTheProductionRecoverChain drives
+// SetWriteDeadline through the EXACT withRecover(withWriteDeadline(...))
+// composition NewRouter builds, rather than withWriteDeadline alone: a
+// handler in production always runs behind withRecover, which wraps the
+// ResponseWriter in *statusRecorder before withWriteDeadline ever sees it.
+// It asserts the returned error explicitly, rather than ignoring it or
+// inferring success from a 200 (a ResponseRecorder-based test would return
+// http.ErrNotSupported unconditionally and prove nothing about production).
+// This is the test that catches statusRecorder.Unwrap being removed or
+// renamed: without it, http.ResponseController cannot see past
+// *statusRecorder to the real connection and this assertion fails.
+func TestWriteDeadlineSupportedThroughTheProductionRecoverChain(t *testing.T) {
+	result := make(chan error, 1)
+	handler := withRecover(discardLogger())(withWriteDeadline(discardLogger())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rc := http.NewResponseController(w)
+		result <- rc.SetWriteDeadline(time.Now().Add(time.Second))
+		w.WriteHeader(http.StatusOK)
+	})))
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	go drain(srv.URL)
+
+	select {
+	case setErr := <-result:
+		if errors.Is(setErr, http.ErrNotSupported) {
+			t.Fatalf("SetWriteDeadline returned ErrNotSupported through the production withRecover(withWriteDeadline(...)) chain — statusRecorder.Unwrap is not reachable: %v", setErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for SetWriteDeadline")
+	}
+}
+
+// TestWriteDeadlineIsSetThroughTheProductionRecoverChain re-runs the
+// load-bearing deadline-expiry probe, but through withRecover(...) — the
+// composition every real handler runs behind — instead of withWriteDeadline
+// alone. This is what catches statusRecorder lacking FlushError: without
+// it, http.ResponseController.Flush stops at statusRecorder's error-less
+// Flush() and returns nil even after the deadline has genuinely expired,
+// which is exactly how a dead SSE client (Task 18) would look alive
+// forever.
+func TestWriteDeadlineIsSetThroughTheProductionRecoverChain(t *testing.T) {
+	short := setShortWriteDeadline(t)
+	result := make(chan error, 1)
+	handler := withRecover(discardLogger())(withWriteDeadline(discardLogger())(deadlineProbeHandler(short+50*time.Millisecond, result)))
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	go drain(srv.URL)
+
+	select {
+	case flushErr := <-result:
+		if flushErr == nil {
+			t.Fatal("expected the second flush to fail after the deadline through the withRecover(withWriteDeadline(...)) chain, got nil error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the handler's second write")
+	}
+}
+
+// lockedResponseWriter serializes access to an underlying ResponseWriter
+// that is not itself safe for concurrent use (httptest.ResponseRecorder's
+// Body buffer is a plain *bytes.Buffer). It exists purely so
+// TestApplyDeadlineIsRaceFreeUnderConcurrentWrites isolates the ONE race it
+// is checking for — deadlineResponseWriter.applied — from an unrelated,
+// expected race in the test double it writes through.
+type lockedResponseWriter struct {
+	http.ResponseWriter
+
+	mu sync.Mutex
+}
+
+func (l *lockedResponseWriter) Write(b []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.ResponseWriter.Write(b)
+}
+
+func (l *lockedResponseWriter) WriteHeader(status int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.ResponseWriter.WriteHeader(status)
+}
+
+// TestApplyDeadlineIsRaceFreeUnderConcurrentWrites writes to the same
+// *deadlineResponseWriter from two goroutines at once — the shape an SSE
+// heartbeat (Task 18) writing alongside the handler's own goroutine takes —
+// and must be clean under `go test -race`. Before applied became an
+// atomic.Bool, this test reproduced "WARNING: DATA RACE" on the applied
+// field (read in the CompareAndSwap-guarded check, written just after) on
+// every run under -race.
+func TestApplyDeadlineIsRaceFreeUnderConcurrentWrites(t *testing.T) {
+	safe := &lockedResponseWriter{ResponseWriter: httptest.NewRecorder()}
+	dw := &deadlineResponseWriter{
+		ResponseWriter: safe,
+		rc:             http.NewResponseController(safe),
+		ctx:            context.Background(),
+		log:            discardLogger(),
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, _ = dw.Write([]byte("a"))
+	}()
+	go func() {
+		defer wg.Done()
+		_, _ = dw.Write([]byte("b"))
+	}()
+	wg.Wait()
 }
 
 func drainWithClient(client *http.Client, url string) {

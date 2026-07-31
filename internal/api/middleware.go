@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"runtime/debug"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -116,6 +117,20 @@ func (s *statusRecorder) Flush() {
 	if f, ok := s.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// FlushError passes through to the underlying ResponseWriter's
+// http.ResponseController-recognized FlushError, if it implements one.
+// Without this, statusRecorder satisfies the older, error-less http.Flusher
+// (via the Flush method above) and NOTHING ELSE, so
+// http.NewResponseController(rec).Flush() stops at statusRecorder and never
+// unwraps to the real connection's FlushError — silently discarding a
+// write-deadline-exceeded error from every handler that sits behind
+// withRecover, which is every production route. This is the same
+// silent-failure shape Unwrap guards against for SetWriteDeadline, on the
+// Flush path instead.
+func (s *statusRecorder) FlushError() error {
+	return http.NewResponseController(s.ResponseWriter).Flush()
 }
 
 // Hijack passes through to the underlying ResponseWriter's http.Hijacker, if
@@ -242,17 +257,36 @@ func isSSEExempt(ctx context.Context) bool {
 type deadlineResponseWriter struct {
 	http.ResponseWriter
 
-	rc      *http.ResponseController
-	ctx     context.Context
-	log     *slog.Logger
-	applied bool
+	rc  *http.ResponseController
+	ctx context.Context
+	log *slog.Logger
+
+	// applied is an atomic.Bool, not a plain bool: Write, WriteHeader and
+	// Flush/FlushError can all reach applyDeadline, and an SSE-shaped handler
+	// (Task 18's heartbeat) writes from more than one goroutine over the
+	// life of one response. A plain bool read at one line and written at
+	// another, with no synchronization, is a data race the race detector
+	// catches the moment two goroutines call any of those methods
+	// concurrently on the same *deadlineResponseWriter.
+	applied atomic.Bool
 }
 
+// applyDeadline sets the write deadline exactly once per response, the first
+// time ANY of Write, WriteHeader, Flush or FlushError is called.
+// CompareAndSwap makes the "have I already decided" check and the "decide
+// now" transition a single atomic step, so two concurrent callers can never
+// both observe "not yet applied" and both proceed to call
+// SetWriteDeadline — one wins the swap and the other returns immediately.
+//
+// A handler that returns without ever writing anything gets no deadline at
+// all: applyDeadline is never called, so there is nothing to time out. That
+// is harmless — an empty body ships instantly — but it does mean this
+// middleware is not a request-lifetime cap on its own; it only bounds a
+// response that has started writing.
 func (d *deadlineResponseWriter) applyDeadline() {
-	if d.applied {
+	if !d.applied.CompareAndSwap(false, true) {
 		return
 	}
-	d.applied = true
 	if isSSEExempt(d.ctx) {
 		return
 	}
@@ -285,7 +319,7 @@ func (d *deadlineResponseWriter) Flush() {
 }
 
 // FlushError passes through to the underlying ResponseWriter's
-// http.ResponseController-recognised FlushError, if it implements one. This
+// http.ResponseController-recognized FlushError, if it implements one. This
 // is the method that actually surfaces a deadline-exceeded write error: if
 // deadlineResponseWriter exposed ONLY the older no-error Flush() method
 // above, http.ResponseController.Flush would stop at THIS type (it
