@@ -633,7 +633,7 @@ Three defects the Go port must **not** reproduce:
 
 | Scope | Limit | Notes |
 |---|---|---|
-| `/api/*` general | **600 req/min per client IP**, burst 120 | Raised deliberately from 100. Derivation: one `/explorer` visit is 1 SSE + 2 stations pages + **two prefetch requests per hovered row across up to 50 rows** = ~103 requests, so a 100/min ceiling is tripped by a *single engaged user*. 600 covers a legitimate session with margin while still bounding one abusive IP. |
+| `/api/*` general | **600 req/min per client IP**, burst 120 — the scope therefore advertises and enforces **`RateLimit-Limit: 720`** (see the correction below the table) | Raised deliberately from 100. Derivation: one `/explorer` visit is 1 SSE + 2 stations pages + **two prefetch requests per hovered row across up to 50 rows** = ~103 requests, so a 100/min ceiling is tripped by a *single engaged user*. 600 covers a legitimate session with margin while still bounding one abusive IP. |
 | `POST /api/verify` | **60 req/min per client IP**, on top of the general limiter | The expensive endpoint (outbound fan-out). The frontend needs at most one per page view. |
 | `GET /api/events` new streams | **30/min per client IP** | Own sub-router; **must not** decrement the general bucket. React StrictMode mounts twice in dev, i.e. two connections per tab. |
 | `GET /api/events` concurrent | **12 per client IP**, plus a **global semaphore of 500** → `503` when full | The TypeScript has **no** concurrency cap at all (`sse.ts:17` is an unbounded `Set` and each client pins a Response, a 30 s interval timer and a socket), so its 10/min rate limit is the only thing between the app and unbounded goroutine/socket growth. |
@@ -641,6 +641,8 @@ Three defects the Go port must **not** reproduce:
 | `/api/health`, `/api/ready`, `/api/ops` | **Exempt** | Registered before the limiter middleware. Fixes defect (3). |
 
 Implementation: `github.com/go-chi/httprate` (`httprate.Limit(600, time.Minute, httprate.WithKeyFuncs(clientIPKey), httprate.WithLimitHandler(json429))`) is the closest semantic match to `express-rate-limit`'s fixed window. A stdlib-only alternative is `golang.org/x/time/rate` with a mutex-guarded `map[string]*rate.Limiter` **plus eviction** (TTL janitor or an LRU capped at 10 k keys) — the unbounded-map memory DoS is the standard mistake and is worse in Go than Node because a spoofable key source lets an attacker mint unlimited entries. Note `x/time/rate` is a token bucket and smooths rather than reproducing the fixed-window burst-then-block shape.
+
+**Correction (Plan B2, Task 15 ruled, Task 22 recorded): the general scope advertises and enforces `RateLimit-Limit: 720`, not 600.** Burst is permanent capacity rather than a start-of-window allowance, so the implementation's `Decision.Limit` is `limit + burst` (600 + 120) and the **721st** request in a window is the first 429. This was ruled deliberately; the documents state what the code does.
 
 Emit `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` and `Retry-After`. **Two tests, not one** (§17.2 test 13): the limiter key is not the proxy address when `CF-Connecting-IP` arrives from a **trusted** peer, **and** `CF-Connecting-IP` from an **untrusted** peer is ignored entirely so a header-spoofing client cannot mint a second key.
 
@@ -755,7 +757,9 @@ The four places the port will be tempted to build SQL dynamically:
 
 ### 6.7 Server timeouts and the SSE exception
 
-Go's `http.Server` has no useful defaults; `ReadHeaderTimeout` in particular is the Slowloris defence Go lacks and `gosec` G112 flags its absence.
+Go's `http.Server` has no useful defaults; `ReadHeaderTimeout` in particular is the Slowloris defence Go lacks.
+
+**Correction (Plan B2, Task 21 measured, Task 22 recorded): `gosec` G112 does NOT flag a missing `ReadHeaderTimeout` on its own.** It fires only when a server composite literal carries **neither** `ReadHeaderTimeout` **nor** `ReadTimeout`. Since every server in this design sets `ReadTimeout`, dropping `ReadHeaderTimeout` leaves lint completely green. The only gate on this field is the runtime test `TestReadHeaderTimeoutIsSetOnBothServers` — this paragraph previously asserted the opposite, and anything that relied on the linter here was uncovered.
 
 | Setting | API server (`API_PORT`) | Ops server (`OPS_PORT`) |
 |---|---|---|
