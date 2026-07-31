@@ -70,3 +70,41 @@ func handleStationList(sts store.StationStore, now func() time.Time, pollRate ti
 		})
 	}
 }
+
+// msgStationNotFound is spec §13.4's 404 message. It is ours, not a value
+// the frontend inspects (it special-cases only the status), but it is a
+// named constant so the golden and the handler cannot disagree.
+const msgStationNotFound = "Station not found"
+
+// handleStationDetail serves GET /api/stations/{stationId}. The body is a
+// BARE stationSummary — the same nine fields as one element of the list,
+// unwrapped (spec §13.4). ONE DTO serves both, so the list's non-null
+// discipline holds here even though the detail page reads every field
+// through optional chaining.
+func handleStationDetail(sts store.StationStore, now func() time.Time, pollRate time.Duration) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		stationID, idErr := parsePathStationID(r.PathValue("stationId"))
+		if idErr != nil {
+			var badReq badRequestError
+			if errors.As(idErr, &badReq) {
+				writeError(w, r, http.StatusBadRequest, badReq.Error())
+				return
+			}
+			writeError(w, r, http.StatusInternalServerError, msgInternal)
+			return
+		}
+
+		st, getErr := sts.Get(r.Context(), stationID)
+		if getErr != nil {
+			if errors.Is(getErr, store.ErrNotFound) {
+				writeError(w, r, http.StatusNotFound, msgStationNotFound)
+				return
+			}
+			httpStatus, msg := statusForStoreError(getErr)
+			writeError(w, r, httpStatus, msg)
+			return
+		}
+
+		writeJSON(w, r, http.StatusOK, toStationSummary(st, now(), pollRate))
+	}
+}

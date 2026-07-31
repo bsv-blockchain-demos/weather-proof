@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -683,3 +684,265 @@ func TestStationListTimestampsMatchTheIsoMillisShape(t *testing.T) {
 }
 
 var uuidZero = uuid.UUID{}
+
+// stationDetailGoldenPath is a constant per call site — gosec G304.
+const stationDetailGoldenPath = "testdata/station_detail.json"
+
+var updateStationDetailGolden = flag.Bool("update-station-detail", false, "rewrite testdata/station_detail.json from the current handler")
+
+// countingStationStore wraps a store.StationStore and counts calls to Get, so
+// tests can assert a 400 short-circuits before ever reaching the store.
+type countingStationStore struct {
+	store.StationStore
+
+	getCalls int
+}
+
+func (c *countingStationStore) Get(ctx context.Context, stationID int64) (store.Station, error) {
+	c.getCalls++
+	return c.StationStore.Get(ctx, stationID)
+}
+
+// stationDetailMux builds a mux carrying the {stationId} pattern the real
+// router (Task 11) will use.
+func stationDetailMux(sts store.StationStore) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/stations/{stationId}", handleStationDetail(sts, func() time.Time { return fixedNow }, pollRate))
+	return mux
+}
+
+func doStationDetailRequest(t *testing.T, sts store.StationStore, target string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, target, nil)
+	rec := httptest.NewRecorder()
+	stationDetailMux(sts).ServeHTTP(rec, req)
+	return rec
+}
+
+func TestStationDetailMatchesItsGoldenFile(t *testing.T) {
+	s := seedStationFixture(t)
+	resp := doStationDetailRequest(t, s.Stations(), "/api/stations/"+strconv.FormatInt(stationActiveFresh, 10))
+
+	var gotIndented bytes.Buffer
+	if err := json.Indent(&gotIndented, resp.Body.Bytes(), "", "  "); err != nil {
+		t.Fatalf("indent got: %v", err)
+	}
+
+	if *updateStationDetailGolden {
+		if writeErr := os.WriteFile(stationDetailGoldenPath, gotIndented.Bytes(), 0o600); writeErr != nil {
+			t.Fatalf("write golden: %v", writeErr)
+		}
+		return
+	}
+
+	wantRaw, readErr := os.ReadFile(stationDetailGoldenPath)
+	if readErr != nil {
+		t.Fatalf("read golden: %v", readErr)
+	}
+	var wantIndented bytes.Buffer
+	if err := json.Indent(&wantIndented, wantRaw, "", "  "); err != nil {
+		t.Fatalf("indent want: %v", err)
+	}
+
+	if gotIndented.String() != wantIndented.String() {
+		t.Errorf("golden mismatch\ngot:\n%s\nwant:\n%s", gotIndented.String(), wantIndented.String())
+	}
+}
+
+func TestStationDetailIsABareObjectWithNineKeys(t *testing.T) {
+	s := seedStationFixture(t)
+	resp := doStationDetailRequest(t, s.Stations(), "/api/stations/"+strconv.FormatInt(stationActiveFresh, 10))
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(resp.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	wantKeys := []string{
+		"stationId", "name", "location", "status", "lastReading",
+		"lastTemp", "lastConditions", "txRecords", "lastBlockHeight",
+	}
+	if len(raw) != len(wantKeys) {
+		t.Fatalf("top-level keys = %d (%v), want %d", len(raw), keysOf(raw), len(wantKeys))
+	}
+	for _, k := range wantKeys {
+		if _, ok := raw[k]; !ok {
+			t.Errorf("missing key %q", k)
+		}
+	}
+	for _, forbidden := range []string{"stations", "stats", "pagination"} {
+		if _, ok := raw[forbidden]; ok {
+			t.Errorf("body carries envelope key %q, want bare object", forbidden)
+		}
+	}
+}
+
+func TestStationDetailSharesTheListsProjection(t *testing.T) {
+	s := seedStationFixture(t)
+
+	detailResp := doStationDetailRequest(t, s.Stations(), "/api/stations/"+strconv.FormatInt(stationActiveFresh, 10))
+
+	listResp := doStationListRequest(t, s.Stations(), "/api/stations?page=1&limit=50")
+	var listOut struct {
+		Stations []json.RawMessage `json:"stations"`
+	}
+	if err := json.Unmarshal(listResp.Body.Bytes(), &listOut); err != nil {
+		t.Fatalf("unmarshal list: %v", err)
+	}
+
+	var match json.RawMessage
+	for _, raw := range listOut.Stations {
+		var probe struct {
+			StationID int64 `json:"stationId"`
+		}
+		if err := json.Unmarshal(raw, &probe); err != nil {
+			t.Fatalf("unmarshal list element: %v", err)
+		}
+		if probe.StationID == stationActiveFresh {
+			match = raw
+		}
+	}
+	if match == nil {
+		t.Fatalf("station %d not found in list response", stationActiveFresh)
+	}
+
+	detailBytes := bytes.TrimSpace(detailResp.Body.Bytes())
+	listBytes := bytes.TrimSpace(match)
+	if !bytes.Equal(detailBytes, listBytes) {
+		t.Errorf("detail body != matching list element\ndetail: %s\nlist:   %s", detailBytes, listBytes)
+	}
+}
+
+func TestStationDetailUnknownIDIsA404(t *testing.T) {
+	s := seedStationFixture(t)
+	resp := doStationDetailRequest(t, s.Stations(), "/api/stations/999999")
+
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404, body=%s", resp.Code, resp.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body["error"] != msgStationNotFound {
+		t.Errorf("error = %v, want %q", body["error"], msgStationNotFound)
+	}
+	if _, ok := body["request_id"]; ok {
+		t.Errorf("404 body carries a request_id key: %v", body)
+	}
+}
+
+func TestStationDetailUnparseableIDIsA400(t *testing.T) {
+	s := seedStationFixture(t)
+
+	cases := []string{"abc", "12x", "1.5", "%00"}
+	for _, id := range cases {
+		t.Run(id, func(t *testing.T) {
+			counting := &countingStationStore{StationStore: s.Stations()}
+			resp := doStationDetailRequest(t, counting, "/api/stations/"+id)
+
+			if resp.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400, body=%s", resp.Code, resp.Body.String())
+			}
+			if counting.getCalls != 0 {
+				t.Errorf("Get was called %d times, want 0", counting.getCalls)
+			}
+		})
+	}
+}
+
+func TestStationDetailInt32OverflowIsA400NotA500(t *testing.T) {
+	s := seedStationFixture(t)
+	resp := doStationDetailRequest(t, s.Stations(), "/api/stations/2147483648")
+
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body=%s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestStationDetailInt32BoundaryIsAccepted(t *testing.T) {
+	s := fake.New()
+	s.SeedStation(store.Station{
+		StationID:      math.MaxInt32,
+		Name:           "Boundary Station",
+		Location:       "Edge Case Bay",
+		IsActive:       true,
+		TxRecords:      7,
+		LastConditions: "Clear",
+	})
+	resp := doStationDetailRequest(t, s.Stations(), "/api/stations/2147483647")
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestStationDetailNeverAnswersFiveHundredForAnIDShape(t *testing.T) {
+	s := seedStationFixture(t)
+
+	adversarial := []string{
+		"abc", "12x", "1.5", "%00", "%80", "%ff",
+		"2147483648", "-2147483649",
+		strings.Repeat("9", 40),
+		"NULL", "%27%20OR%201%3D1", "<script>",
+	}
+	for _, id := range adversarial {
+		t.Run(id, func(t *testing.T) {
+			resp := doStationDetailRequest(t, s.Stations(), "/api/stations/"+id)
+			if resp.Code != http.StatusBadRequest && resp.Code != http.StatusNotFound {
+				t.Errorf("id %q: status = %d, want 400 or 404", id, resp.Code)
+			}
+		})
+	}
+
+	// Positive control: the seeded id must answer 200, so a handler that
+	// 404s (or 400s) everything cannot pass this test.
+	resp := doStationDetailRequest(t, s.Stations(), "/api/stations/"+strconv.FormatInt(stationActiveFresh, 10))
+	if resp.Code != http.StatusOK {
+		t.Errorf("seeded id: status = %d, want 200", resp.Code)
+	}
+}
+
+func TestStationDetailMapsAStoreFailureToAnOpaque500(t *testing.T) {
+	s := fake.New()
+	s.FailAll = errors.New("SQLSTATE 42P01: relation \"stations\" does not exist")
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/stations/"+strconv.FormatInt(stationActiveFresh, 10), nil)
+	req = req.WithContext(context.WithValue(req.Context(), requestIDContextKey{}, "01970000-dddd-7000-8000-000000000005"))
+	rec := httptest.NewRecorder()
+	stationDetailMux(s.Stations()).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500, body=%s", rec.Code, rec.Body.String())
+	}
+	raw := rec.Body.Bytes()
+	if bytes.Contains(raw, []byte("SQLSTATE")) || bytes.Contains(raw, []byte("stations")) {
+		t.Errorf("body leaks driver detail: %s", raw)
+	}
+	var decoded serverErrorDTO
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.RequestID == "" {
+		t.Errorf("request_id is empty, want present")
+	}
+}
+
+func TestStationDetailLastTempIsPresentAndNullWhenUnknown(t *testing.T) {
+	s := seedStationFixture(t)
+	resp := doStationDetailRequest(t, s.Stations(), "/api/stations/"+strconv.FormatInt(stationNilReading, 10))
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", resp.Code, resp.Body.String())
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	lastTemp, ok := body["lastTemp"]
+	if !ok {
+		t.Fatalf("body has no \"lastTemp\" key: %v", body)
+	}
+	if string(lastTemp) != "null" {
+		t.Errorf("lastTemp = %s, want null", string(lastTemp))
+	}
+}
