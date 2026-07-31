@@ -492,6 +492,36 @@ func TestHubIsSafeUnderConcurrentRegistersAndBroadcasts(t *testing.T) {
 // observe a write deadline — which are the properties under test.
 // ───────────────────────────────────────────────────────────────────────────
 
+// The SSE wire contract, stated INDEPENDENTLY of internal/api's own constants.
+//
+// These are DELIBERATE duplicates of sseEventName, sseContentType,
+// sseHeartbeat, sseFrameSuffix and the four header names — never references to
+// them. The Global Constraints forbid asserting an expected value against the
+// package's own constant because both sides then mutate together: with
+// `got != sseEventName`, renaming sseEventName to "statsupdate" leaves the
+// whole suite GREEN while every browser silently stops receiving updates.
+// Measured, not theorized — that mutation, and "text/plain" for the content
+// type, and ":pong\n\n" for the heartbeat, all SURVIVED this suite before
+// these literals existed.
+//
+// DO NOT "deduplicate" these against the package constants. Duplication is the
+// entire point: this block is the wire contract the browser implements, and it
+// must be able to disagree with the code.
+const (
+	wireEventName            = "stats_update"
+	wireEventLine            = "event: stats_update"
+	wireFrameTerminator      = "\n\n"
+	wirePing                 = ":ping\n\n"
+	wireContentType          = "text/event-stream"
+	wireCacheControl         = "no-cache"
+	wireConnection           = "keep-alive"
+	wireAccelBuffering       = "no"
+	wireHeaderContentType    = "Content-Type"
+	wireHeaderCacheControl   = "Cache-Control"
+	wireHeaderConnection     = "Connection"
+	wireHeaderAccelBuffering = "X-Accel-Buffering"
+)
+
 // sseFixtureStats is the store-level fixture the first push and the golden
 // frame are built from. All four projected values are pairwise distinct and
 // none is 0 or 1, so a projection that swaps two fields, or a handler that
@@ -719,11 +749,11 @@ type parsedFrame struct {
 // it must end with the blank line, and it must carry no bare CR.
 func parseSSEFrame(t *testing.T, raw string) parsedFrame {
 	t.Helper()
-	if !strings.HasSuffix(raw, sseFrameSuffix) {
+	if !strings.HasSuffix(raw, wireFrameTerminator) {
 		t.Fatalf("frame is not terminated by a blank line, so no client would ever dispatch it: %q", raw)
 	}
 	out := parsedFrame{raw: raw}
-	for _, line := range strings.Split(strings.TrimSuffix(raw, sseFrameSuffix), "\n") {
+	for _, line := range strings.Split(strings.TrimSuffix(raw, wireFrameTerminator), "\n") {
 		switch {
 		case strings.HasPrefix(line, ":"):
 			out.comment = strings.TrimPrefix(line, ":")
@@ -747,6 +777,12 @@ func parseSSEFrame(t *testing.T, raw string) parsedFrame {
 // the assertion could never pass, let alone discriminate. This mirror type is
 // the replacement: it round-trips the wire shape, keeps all four keys, and is
 // deep-equal comparable against an expected value built WITHOUT toStats.
+//
+// KNOWN COUPLING, deliberate: a newly ADDED statsDTO field is invisible here —
+// json.Unmarshal ignores an unknown key, so these tests would keep passing.
+// The gate for that is testdata/stations_list.json, whose golden bytes carry
+// the same four keys and break on a fifth. If that golden ever stops covering
+// statsDTO, this type needs the new field too.
 type wireStats struct {
 	ActiveStations  int64   `json:"activeStations"`
 	TotalTx         int64   `json:"totalTx"`
@@ -811,17 +847,17 @@ func TestEventsSetsTheStreamingHeaders(t *testing.T) {
 	if c.resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", c.resp.StatusCode)
 	}
-	if got := c.resp.Header.Get(headerContentType); got != sseContentType {
-		t.Errorf("%s = %q, want %q", headerContentType, got, sseContentType)
+	if got := c.resp.Header.Get(wireHeaderContentType); got != wireContentType {
+		t.Errorf("%s = %q, want %q", wireHeaderContentType, got, wireContentType)
 	}
-	if got := c.resp.Header.Get(headerCacheControl); got != sseCacheControl {
-		t.Errorf("%s = %q, want %q", headerCacheControl, got, sseCacheControl)
+	if got := c.resp.Header.Get(wireHeaderCacheControl); got != wireCacheControl {
+		t.Errorf("%s = %q, want %q", wireHeaderCacheControl, got, wireCacheControl)
 	}
-	if got := c.resp.Header.Get(headerConnection); got != sseConnection {
-		t.Errorf("%s = %q, want %q", headerConnection, got, sseConnection)
+	if got := c.resp.Header.Get(wireHeaderConnection); got != wireConnection {
+		t.Errorf("%s = %q, want %q", wireHeaderConnection, got, wireConnection)
 	}
-	if got := c.resp.Header.Get(sseAccelBuffer); got != sseAccelBufferOff {
-		t.Errorf("%s = %q, want %q", sseAccelBuffer, got, sseAccelBufferOff)
+	if got := c.resp.Header.Get(wireHeaderAccelBuffering); got != wireAccelBuffering {
+		t.Errorf("%s = %q, want %q", wireHeaderAccelBuffering, got, wireAccelBuffering)
 	}
 }
 
@@ -834,8 +870,8 @@ func TestEventsWritesOneStatsUpdateImmediatelyOnConnect(t *testing.T) {
 	c := h.connect(t, nil)
 
 	frame := parseSSEFrame(t, c.next(t))
-	if frame.event != sseEventName {
-		t.Fatalf("first frame event = %q, want %q; raw=%q", frame.event, sseEventName, frame.raw)
+	if frame.event != wireEventName {
+		t.Fatalf("first frame event = %q, want %q; raw=%q", frame.event, wireEventName, frame.raw)
 	}
 	if got, expected := decodeStatsData(t, frame), wantStats(t, want); !reflect.DeepEqual(got, expected) {
 		t.Fatalf("first push payload = %+v, want %+v", got, expected)
@@ -847,12 +883,12 @@ func TestEventsEventNameIsExactlyStatsUpdate(t *testing.T) {
 	c := h.connect(t, nil)
 
 	raw := c.next(t)
-	if !strings.Contains(raw, "event: "+sseEventName+"\n") {
-		t.Fatalf("frame carries no %q line: %q", "event: "+sseEventName, raw)
+	if !strings.Contains(raw, wireEventLine+"\n") {
+		t.Fatalf("frame carries no %q line: %q", wireEventLine, raw)
 	}
 	// Each negative form is a plausible typo and each silently breaks the
 	// client: EventSource dispatches on the exact field value.
-	for _, wrong := range []string{"event: message", "event: stats-update", "event:" + sseEventName} {
+	for _, wrong := range []string{"event: message", "event: stats-update", "event:" + wireEventName} {
 		if strings.Contains(raw, wrong) {
 			t.Errorf("frame contains %q, which no listener is registered for: %q", wrong, raw)
 		}
@@ -878,12 +914,12 @@ func TestEventsFrameEndsWithABlankLine(t *testing.T) {
 	c := h.connect(t, nil)
 
 	raw := c.next(t)
-	if !strings.HasSuffix(raw, sseFrameSuffix) {
+	if !strings.HasSuffix(raw, wireFrameTerminator) {
 		t.Fatalf("frame does not end with a blank line, so the client never dispatches it: %q", raw)
 	}
 	// The blank line must be the ONLY blank line: an extra one before the data
 	// field would dispatch an event with an empty payload.
-	if strings.Contains(strings.TrimSuffix(raw, sseFrameSuffix), sseFrameSuffix) {
+	if strings.Contains(strings.TrimSuffix(raw, wireFrameTerminator), wireFrameTerminator) {
 		t.Fatalf("frame contains a blank line before its terminator: %q", raw)
 	}
 
@@ -933,13 +969,13 @@ func TestEventsWritesAPingCommentAndItIsNotAStatsUpdate(t *testing.T) {
 	c.next(t)
 
 	ping := c.next(t)
-	if ping != sseHeartbeat {
-		t.Fatalf("heartbeat frame = %q, want exactly %q", ping, sseHeartbeat)
+	if ping != wirePing {
+		t.Fatalf("heartbeat frame = %q, want exactly %q", ping, wirePing)
 	}
 	// Spec §13.7: the client JSON.parses every stats_update inside a bare
 	// catch, so a heartbeat shaped like one is invisible breakage.
-	if strings.Contains(ping, sseEventName) {
-		t.Fatalf("the heartbeat is a %s frame: %q", sseEventName, ping)
+	if strings.Contains(ping, wireEventName) {
+		t.Fatalf("the heartbeat is a %s frame: %q", wireEventName, ping)
 	}
 }
 
@@ -952,8 +988,8 @@ func TestEventsFlushesPerWrite(t *testing.T) {
 	c := h.connect(t, nil)
 
 	frame := parseSSEFrame(t, c.next(t))
-	if frame.event != sseEventName {
-		t.Fatalf("first flushed frame event = %q, want %q", frame.event, sseEventName)
+	if frame.event != wireEventName {
+		t.Fatalf("first flushed frame event = %q, want %q", frame.event, wireEventName)
 	}
 	// The stream must still be open: a frame that only became readable because
 	// the handler returned would prove nothing about flushing.
@@ -1024,8 +1060,8 @@ func TestEventsRefusesTheThirteenthConcurrentStreamFromOneIP(t *testing.T) {
 		t.Fatalf("Broadcast reached %d incumbents, want %d", n, sseConcurrentPerIP)
 	}
 	for i, c := range conns {
-		if frame := parseSSEFrame(t, c.nextStatsFrame(t)); frame.event != sseEventName {
-			t.Fatalf("incumbent %d: event = %q, want %q", i, frame.event, sseEventName)
+		if frame := parseSSEFrame(t, c.nextStatsFrame(t)); frame.event != wireEventName {
+			t.Fatalf("incumbent %d: event = %q, want %q", i, frame.event, wireEventName)
 		}
 	}
 }
@@ -1139,8 +1175,8 @@ func TestEventsHasNoWriteDeadline(t *testing.T) {
 
 	needed := int(short/ping) + 1
 	for i := range needed {
-		if got := c.next(t); got != sseHeartbeat {
-			t.Fatalf("frame %d after the first push = %q, want the heartbeat %q", i, got, sseHeartbeat)
+		if got := c.next(t); got != wirePing {
+			t.Fatalf("frame %d after the first push = %q, want the heartbeat %q", i, got, wirePing)
 		}
 	}
 
@@ -1150,8 +1186,8 @@ func TestEventsHasNoWriteDeadline(t *testing.T) {
 		t.Fatalf("Broadcast delivered to %d clients past the write deadline, want 1", n)
 	}
 	frame := parseSSEFrame(t, c.nextStatsFrame(t))
-	if frame.event != sseEventName {
-		t.Fatalf("event past the write deadline = %q, want %q", frame.event, sseEventName)
+	if frame.event != wireEventName {
+		t.Fatalf("event past the write deadline = %q, want %q", frame.event, wireEventName)
 	}
 }
 
@@ -1170,8 +1206,8 @@ func TestEventsStatsFailureStillOpensTheStream(t *testing.T) {
 	if c.resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200: a failed stats read must not refuse the stream", c.resp.StatusCode)
 	}
-	if got := c.resp.Header.Get(headerContentType); got != sseContentType {
-		t.Errorf("%s = %q, want %q", headerContentType, got, sseContentType)
+	if got := c.resp.Header.Get(wireHeaderContentType); got != wireContentType {
+		t.Errorf("%s = %q, want %q", wireHeaderContentType, got, wireContentType)
 	}
 
 	// The FIRST PUSH is omitted, not sent empty and not sent as a broken

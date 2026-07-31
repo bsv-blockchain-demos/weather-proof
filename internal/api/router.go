@@ -123,9 +123,16 @@ func NewRouter(d Deps) http.Handler {
 	mux.HandleFunc(pathHealth, onlyGET(handleProbeStandIn))
 	mux.HandleFunc(pathReady, onlyGET(handleProbeStandIn))
 
-	// ── 3. SSE. Its own scope, and markSSEExempt inside the limiter so a 429 —
-	// an ordinary short response — still gets the write deadline while the
-	// stream itself does not.
+	// ── 3. SSE. Its own scope, with markSSEExempt INSIDE withLimit so the
+	// LIMITER's 429 — written before the marker ever runs — still gets the
+	// write deadline.
+	//
+	// Everything past the marker is exempt, and that deliberately includes the
+	// HUB's own 429 and 503 refusal bodies: the marker is a context flag
+	// flipped during dispatch, not a second router, so there is no seam that
+	// exempts the stream while still deadlining a short body written by the
+	// same handler. Harmless — both refusals are a few dozen bytes written
+	// immediately, with no reader to stall on.
 	//
 	// markSSEExempt is NOT optional and nothing else enforces it: without the
 	// marker the stream inherits withWriteDeadline's 30 s budget and every
