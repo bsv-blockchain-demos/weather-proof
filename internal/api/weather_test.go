@@ -431,7 +431,7 @@ func TestWeatherListMapsAStoreFailureToAnOpaque500(t *testing.T) {
 	s.FailAll = errors.New("SQLSTATE 42P01: relation \"weather_records\" does not exist")
 
 	req := newWeatherListRequest(t, "/api/weather?page=1&limit=20")
-	req = req.WithContext(context.WithValue(req.Context(), requestIDContextKey{}, "01970000-cccc-7000-8000-000000000003"))
+	req = req.WithContext(context.WithValue(req.Context(), requestIDKey{}, "01970000-cccc-7000-8000-000000000003"))
 	rec := httptest.NewRecorder()
 	handleWeatherList(s)(rec, req)
 
@@ -811,7 +811,7 @@ func TestWeatherDetailMapsAStoreFailureToAnOpaque500(t *testing.T) {
 	s.FailAll = errors.New("SQLSTATE 42P01: relation \"weather_records\" does not exist")
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/weather/some-id", nil)
-	req = req.WithContext(context.WithValue(req.Context(), requestIDContextKey{}, "01970000-cccc-7000-8000-000000000004"))
+	req = req.WithContext(context.WithValue(req.Context(), requestIDKey{}, "01970000-cccc-7000-8000-000000000004"))
 	rec := httptest.NewRecorder()
 	weatherDetailMux(s).ServeHTTP(rec, req)
 

@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -23,21 +22,6 @@ const (
 // ever reaches this string.
 const msgInternal = "internal server error"
 
-// requestIDContextKey is a placeholder carrier for the correlation id until
-// the request-id middleware task defines its own canonical key and
-// installs it on every request's context; that task updates writeError to
-// read its own accessor instead of this one. Kept unexported and
-// zero-sized so it never collides with another package's context key.
-type requestIDContextKey struct{}
-
-// requestIDFromContext returns the id the middleware attached to ctx, or ""
-// when none is present (e.g. no middleware installed, as in this task's own
-// tests except where they set one explicitly).
-func requestIDFromContext(ctx context.Context) string {
-	v, _ := ctx.Value(requestIDContextKey{}).(string)
-	return v
-}
-
 // writeJSON marshals v and writes it with the status. Content-Type is set
 // BEFORE WriteHeader — setting it afterwards is a silent no-op — and an
 // encode failure is logged rather than answered with a second WriteHeader,
@@ -55,7 +39,7 @@ func writeJSON(w http.ResponseWriter, r *http.Request, status int, v any) {
 // one key.
 func writeError(w http.ResponseWriter, r *http.Request, status int, msg string) {
 	if status >= 500 {
-		writeJSON(w, r, status, serverErrorDTO{Error: msg, RequestID: requestIDFromContext(r.Context())})
+		writeJSON(w, r, status, serverErrorDTO{Error: msg, RequestID: requestIDFrom(r.Context())})
 		return
 	}
 	writeJSON(w, r, status, clientErrorDTO{Error: msg})

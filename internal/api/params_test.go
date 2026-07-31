@@ -423,7 +423,7 @@ func TestWriteErrorOmitsRequestIDBelowFiveHundred(t *testing.T) {
 func TestWriteErrorCarriesRequestIDOnFiveHundred(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
-	ctx := context.WithValue(req.Context(), requestIDContextKey{}, "01970000-bbbb-7000-8000-000000000002")
+	ctx := context.WithValue(req.Context(), requestIDKey{}, "01970000-bbbb-7000-8000-000000000002")
 	req = req.WithContext(ctx)
 
 	writeError(rec, req, http.StatusInternalServerError, msgInternal)

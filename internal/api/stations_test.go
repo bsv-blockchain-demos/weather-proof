@@ -622,7 +622,7 @@ func TestStationListMapsAStoreFailureToAnOpaque500(t *testing.T) {
 func doStationListRequestWithRequestID(t *testing.T, sts store.StationStore, target string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := newStationListRequest(t, target)
-	req = req.WithContext(context.WithValue(req.Context(), requestIDContextKey{}, "01970000-dddd-7000-8000-000000000004"))
+	req = req.WithContext(context.WithValue(req.Context(), requestIDKey{}, "01970000-dddd-7000-8000-000000000004"))
 	rec := httptest.NewRecorder()
 	handleStationList(sts, func() time.Time { return fixedNow }, pollRate)(rec, req)
 	return rec
@@ -907,7 +907,7 @@ func TestStationDetailMapsAStoreFailureToAnOpaque500(t *testing.T) {
 	s.FailAll = errors.New("SQLSTATE 42P01: relation \"stations\" does not exist")
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/stations/"+strconv.FormatInt(stationActiveFresh, 10), nil)
-	req = req.WithContext(context.WithValue(req.Context(), requestIDContextKey{}, "01970000-dddd-7000-8000-000000000005"))
+	req = req.WithContext(context.WithValue(req.Context(), requestIDKey{}, "01970000-dddd-7000-8000-000000000005"))
 	rec := httptest.NewRecorder()
 	stationDetailMux(s.Stations()).ServeHTTP(rec, req)
 

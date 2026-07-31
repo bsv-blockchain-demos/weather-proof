@@ -93,5 +93,5 @@ func NewRouter(d Deps) http.Handler {
 
 	mux.HandleFunc("/", notFoundJSON)
 
-	return mux
+	return withRequestID(withRecover(d.Logger)(mux))
 }
