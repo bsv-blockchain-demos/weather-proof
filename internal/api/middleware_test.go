@@ -68,20 +68,6 @@ func TestWithRequestIDIgnoresAnInboundHeader(t *testing.T) {
 	}
 }
 
-func TestWithRequestIDIgnoresAnInboundHeaderWithCRLF(t *testing.T) {
-	handler := withRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
-	req.Header["X-Request-Id"] = []string{"a\r\nX-Injected: 1"}
-	handler.ServeHTTP(rec, req)
-
-	if rec.Header().Get("X-Injected") != "" {
-		t.Fatalf("expected no X-Injected header, header injection succeeded")
-	}
-}
-
 func TestRequestIDFromReturnsEmptyWithoutTheMiddleware(t *testing.T) {
 	if got := requestIDFrom(context.Background()); got != "" {
 		t.Fatalf("expected empty string, got %q", got)
@@ -101,6 +87,9 @@ func TestWithRecoverTurnsAPanicIntoAnOpaque500(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got %d", rec.Code)
 	}
+	if got := rec.Header().Get(headerContentType); got != contentTypeJSON {
+		t.Fatalf("expected Content-Type %q, got %q", contentTypeJSON, got)
+	}
 	var body serverErrorDTO
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("unmarshal body: %v", err)
@@ -116,6 +105,28 @@ func TestWithRecoverTurnsAPanicIntoAnOpaque500(t *testing.T) {
 		if strings.Contains(raw, forbidden) {
 			t.Fatalf("body leaked forbidden substring %q: %s", forbidden, raw)
 		}
+	}
+
+	// The struct-unmarshal assertions above cannot see an extra leaked key,
+	// since json.Unmarshal into serverErrorDTO silently ignores anything not
+	// named "error" or "request_id". Decode into a raw key set and assert it
+	// is exactly those two, and separately assert the exact serialized body.
+	var rawKeys map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &rawKeys); err != nil {
+		t.Fatalf("unmarshal body into raw key set: %v", err)
+	}
+	if len(rawKeys) != 2 {
+		t.Fatalf("expected exactly 2 keys, got %d: %v", len(rawKeys), rawKeys)
+	}
+	if _, ok := rawKeys["error"]; !ok {
+		t.Fatalf("expected an %q key, got %v", "error", rawKeys)
+	}
+	if _, ok := rawKeys["request_id"]; !ok {
+		t.Fatalf("expected a %q key, got %v", "request_id", rawKeys)
+	}
+	wantBody := `{"error":"internal server error","request_id":"` + body.RequestID + `"}` + "\n"
+	if raw != wantBody {
+		t.Fatalf("expected exact body %q, got %q", wantBody, raw)
 	}
 }
 

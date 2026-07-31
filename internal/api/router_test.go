@@ -1,8 +1,10 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -228,6 +230,70 @@ func TestRouterQueryParametersReachTheHandler(t *testing.T) {
 	}
 	if decoded.Items[0].StationID != routerSeededStationID {
 		t.Errorf("got stationId %d, want %d", decoded.Items[0].StationID, routerSeededStationID)
+	}
+}
+
+// panicRecordStore embeds a nil store.RecordStore so it satisfies the
+// interface via promotion, and overrides only List to panic. No other method
+// is ever called through the /api/weather route this test drives.
+type panicRecordStore struct {
+	store.RecordStore
+}
+
+func (panicRecordStore) List(_ context.Context, _ store.ListFilter) ([]store.Record, int64, error) {
+	panic(errors.New(panicMsg))
+}
+
+// TestNewRouterOrdersRequestIDOutsideRecovery drives a panic THROUGH
+// NewRouter itself, rather than a hand-composed chain, so a future reordering
+// of withRequestID/withRecover in router.go has a reachable test to break.
+// Verified in a scratch copy: swapping router.go's wiring to
+// withRecover(d.Logger)(withRequestID(mux)) makes this test fail under the
+// full package suite, because withRecover's own recovery handler reads
+// requestIDFrom(r.Context()) — populated only if withRequestID ran first —
+// both for the logged attrs and (via writeError) for the response body, so
+// the two go empty/blank together and the equality below breaks.
+func TestNewRouterOrdersRequestIDOutsideRecovery(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+
+	d := testDeps(t)
+	d.Logger = logger
+	d.Store.Records = panicRecordStore{}
+
+	h := NewRouter(d)
+	rec := doGet(t, h, "/api/weather")
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d; body=%s", rec.Code, rec.Body.String())
+	}
+
+	headerID := rec.Header().Get(requestIDHeader)
+	if headerID == "" {
+		t.Fatalf("expected a non-empty %s header", requestIDHeader)
+	}
+
+	var body serverErrorDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal body: %v; body=%s", err, rec.Body.String())
+	}
+	if body.RequestID == "" {
+		t.Fatalf("expected a non-empty request_id in the body")
+	}
+	if body.RequestID != headerID {
+		t.Fatalf("body request_id %q does not equal response header %q", body.RequestID, headerID)
+	}
+
+	var logRecord map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &logRecord); err != nil {
+		t.Fatalf("unmarshal log line: %v; raw=%s", err, buf.String())
+	}
+	logID, _ := logRecord["request_id"].(string)
+	if logID == "" {
+		t.Fatalf("expected a non-empty request_id in the log line")
+	}
+	if logID != headerID {
+		t.Fatalf("logged request_id %q does not equal response header %q", logID, headerID)
 	}
 }
 
