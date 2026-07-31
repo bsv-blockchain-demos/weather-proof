@@ -120,6 +120,35 @@ func AttachBaseContext(ctx context.Context, srv *http.Server) {
 	srv.BaseContext = func(_ net.Listener) context.Context { return ctx }
 }
 
+// ErrNoBaseContext is returned by ListenAndServe when the server it is handed
+// has no BaseContext. It is a sentinel rather than a plain error so a caller
+// can distinguish "wiring bug" from "the listener failed".
+var ErrNoBaseContext = errors.New("api: server has no BaseContext; call AttachBaseContext before serving")
+
+// ListenAndServe is the ONLY sanctioned way to start a server built by
+// NewAPIServer or NewOpsServer, and it exists because AttachBaseContext was
+// otherwise an unenforced seam.
+//
+// Forgetting AttachBaseContext is completely silent: every request still
+// works, every test still passes, and the only symptom is that each deploy
+// burns the whole 5 s step-1 budget with a live SSE stream attached and logs
+// nothing about it. A doc comment does not hold against that, and a static
+// gate over cmd/ call sites cannot be written yet — no cmd/ exists in this
+// tree, so such a gate could not be made to fail today, and the plan's rule
+// is that a gate which cannot fail must not be written. A refusal at the one
+// entry point can fail, and does: see
+// TestListenAndServeRefusesAServerWithNoBaseContext.
+//
+// Residual, stated rather than hidden: a caller can still bypass this by
+// invoking srv.ListenAndServe() directly. Whichever plan adds cmd/ should add
+// the static call-site gate at that point, when it can be made to fail.
+func ListenAndServe(srv *http.Server) error {
+	if srv.BaseContext == nil {
+		return ErrNoBaseContext
+	}
+	return srv.ListenAndServe()
+}
+
 // Shutdown stops every server under ONE shutdownBudget-bounded context and
 // returns every error joined, so a failure on one server cannot hide a failure
 // on the other.
