@@ -512,6 +512,30 @@ func TestAllowKeepsDistinctKeysIndependent(t *testing.T) {
 	}
 }
 
+// TestANonPositiveWindowStillLimits pins the window coercion. With window 0 the
+// "has this window expired" test — now.Sub(w.start) >= l.window — is true on
+// every call, so the counter reset before every check and the limiter allowed
+// forever: a zero-valued wiring silently removed the control rather than
+// tripping over it. The clock never advances here, so any refusal observed can
+// only come from the coerced window and not from time passing.
+func TestANonPositiveWindowStillLimits(t *testing.T) {
+	for _, window := range []time.Duration{0, -time.Minute} {
+		clock := newClock()
+		l := New(1, 0, window, 10, clock.Now)
+
+		if d := l.Allow("a"); !d.OK {
+			t.Fatalf("window %v: call 1 refused, want allowed", window)
+		}
+		d := l.Allow("a")
+		if d.OK {
+			t.Fatalf("window %v: call 2 allowed, want refused — a non-positive window must not disable the limiter", window)
+		}
+		if d.ResetAfter <= 0 {
+			t.Errorf("window %v: ResetAfter = %v, want positive so Retry-After is never 0", window, d.ResetAfter)
+		}
+	}
+}
+
 func TestKeysIsBoundedAtMaxKeys(t *testing.T) {
 	clock := newClock()
 	l := New(5, 0, time.Minute, 10, clock.Now)

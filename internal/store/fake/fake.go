@@ -50,7 +50,19 @@ type Store struct {
 	totalTx   int64
 	totalRecs int64
 	lastWrite *time.Time
-	seenTx    map[string]struct{}
+
+	// seenTx mirrors the set of txids present on weather_records rows, which is
+	// what TxIDExists answers from (txIDExistsSQL selects straight off that
+	// column). SeedRecord adds to it, so a seeded completed row is visible to
+	// TxIDExists exactly as it would be in Postgres.
+	seenTx map[string]struct{}
+
+	// completedTx is the fake's completed_txids table: the set of txids some
+	// Complete call has counted toward totalTx. It is SEPARATE from seenTx and
+	// must stay so — seenTx is populated by SeedRecord too, and in Postgres
+	// seeding a row through SQL puts nothing in the ledger, so sharing one set
+	// would make the fake skip an increment Postgres performs.
+	completedTx map[string]struct{}
 }
 
 // New returns an empty fake with the default fixed clock.
@@ -61,7 +73,9 @@ func New() *Store {
 		stations:  make(map[int64]store.Station),
 		deposits:  make(map[string]store.Deposit),
 		preflight: make(map[string]time.Time),
-		seenTx:    make(map[string]struct{}),
+
+		seenTx:      make(map[string]struct{}),
+		completedTx: make(map[string]struct{}),
 	}
 }
 
@@ -116,17 +130,22 @@ func (s *Store) SeedRecord(r store.Record) {
 	if r.CreatedAt.IsZero() {
 		r.CreatedAt = s.Now()
 	}
-	s.records[r.ID] = r
+	// Cloned on the way IN, like every other write path here: a test that seeds
+	// a Record and then reuses its own *time.Time — building a second fixture
+	// from the first is the obvious way to do it — would otherwise be writing
+	// into store state, and would observe a change Postgres could never make.
+	s.records[r.ID] = cloneRecord(r)
 	if r.TxID != nil {
 		s.seenTx[*r.TxID] = struct{}{}
 	}
 }
 
-// SeedStation inserts st verbatim.
+// SeedStation inserts st verbatim. Cloned on the way in, for the reason given
+// on SeedRecord.
 func (s *Store) SeedStation(st store.Station) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.stations[st.StationID] = st
+	s.stations[st.StationID] = cloneStation(st)
 }
 
 // Ping implements store.Pinger.
@@ -257,11 +276,12 @@ func (s *Store) ClaimPending(_ context.Context, n int, ref uuid.UUID) ([]store.R
 }
 
 // Complete implements store.RecordStore.
-func (s *Store) Complete(ctx context.Context, txID string, pubs []store.Publication) (store.Stats, error) {
+func (s *Store) Complete(_ context.Context, txID string, pubs []store.Publication) (store.Stats, error) {
 	if s.FailAll != nil {
 		return store.Stats{}, s.FailAll
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	now := s.Now()
 	moved := int64(0)
 	arc := store.ChainARCAccepted
@@ -305,14 +325,24 @@ func (s *Store) Complete(ctx context.Context, txID string, pubs []store.Publicat
 		s.stations[r.StationID] = st
 	}
 	if moved > 0 {
-		s.totalTx++
+		// totalTx moves only for a txid no earlier Complete has counted —
+		// completed_txids' primary key, in a map. A repeated txid applied to a
+		// second processing set really does complete more RECORDS, so totalRecs
+		// moves either way; it is the TRANSACTION that cannot repeat, and
+		// app_stats.total_tx is documented as a count of distinct ones.
+		if _, counted := s.completedTx[txID]; !counted {
+			s.completedTx[txID] = struct{}{}
+			s.totalTx++
+		}
 		s.totalRecs += moved
 		write := now
 		s.lastWrite = &write
 		s.seenTx[txID] = struct{}{}
 	}
-	s.mu.Unlock()
-	return s.Stats(ctx)
+	// Read under the SAME lock acquisition that made the writes, so the returned
+	// snapshot is this action's result and cannot include a concurrent
+	// Complete's. Postgres reads its stats inside the completing transaction.
+	return s.statsLocked(), nil
 }
 
 // FailPermanent implements store.RecordStore.
@@ -685,6 +715,12 @@ func (s *Store) Upsert(_ context.Context, in store.Station) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// cloneStation on the INPUT, before anything is stored. Latitude and
+	// Longitude are *float64 and both branches below store them, so without this
+	// the fake keeps the caller's pointers and `*lat = 0` at the call site
+	// silently moves a station — with no lock held, and with no equivalent in
+	// Postgres, which copies the values during bind.
+	in = cloneStation(in)
 	existing, ok := s.stations[in.StationID]
 	if !ok {
 		in.CreatedAt = s.Now()
@@ -799,7 +835,16 @@ func (s *Store) Stats(_ context.Context) (store.Stats, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.statsLocked(), nil
+}
 
+// statsLocked is Stats' body with the lock ALREADY held. It exists so Complete
+// can return the stats its own writes produced without dropping the mutex in
+// between: Complete used to unlock and then call Stats, so a concurrent
+// Complete could land in the gap and the caller would be handed a snapshot that
+// included another action's writes. Postgres reads its stats inside the same
+// transaction that made them, so this is parity, not defensiveness.
+func (s *Store) statsLocked() store.Stats {
 	active := int64(0)
 	for _, st := range s.stations {
 		if st.IsActive {
@@ -815,7 +860,7 @@ func (s *Store) Stats(_ context.Context) (store.Stats, error) {
 		write := *s.lastWrite
 		out.LastRecordWrite = &write
 	}
-	return out, nil
+	return out
 }
 
 // NewDeposit implements store.DepositStore.
@@ -829,7 +874,12 @@ func (s *Store) NewDeposit(_ context.Context, d store.Deposit) error {
 		return store.ErrConflict
 	}
 	d.CreatedAt = s.Now()
-	s.deposits[d.Suffix] = d
+	// cloneDeposit on the way IN, not only on the way out: without it the store
+	// keeps the CALLER's pointers, and a caller that later writes through its
+	// own *int64 mutates stored state with no lock held. Postgres copies these
+	// values during bind, so that mutation is a state change production cannot
+	// produce.
+	s.deposits[d.Suffix] = cloneDeposit(d)
 	return nil
 }
 
@@ -843,7 +893,9 @@ func (s *Store) PendingDeposits(_ context.Context) ([]store.Deposit, error) {
 	out := make([]store.Deposit, 0, len(s.deposits))
 	for _, d := range s.deposits {
 		if d.InternalizedAt == nil {
-			out = append(out, d)
+			// Cloned on the way out for the same reason records and stations
+			// are: a returned Deposit must not be a handle on store state.
+			out = append(out, cloneDeposit(d))
 		}
 	}
 	// created_at ASC, suffix ASC, matching pendingDepositsSQL: suffix is only
@@ -869,6 +921,13 @@ func (s *Store) MarkInternalized(_ context.Context, suffix, txID string, vout in
 	d, ok := s.deposits[suffix]
 	if !ok {
 		return store.ErrNotFound
+	}
+	// An already-internalized deposit is a CONFLICT, never a second write:
+	// overwriting discards the outpoint the first call resolved, which is the
+	// only thing tying the deposit to something on chain. Mirrors
+	// markInternalizedSQL's `AND internalized_at IS NULL`.
+	if d.InternalizedAt != nil {
+		return store.ErrConflict
 	}
 	txid := txID
 	d.TxID = &txid
@@ -1072,6 +1131,34 @@ func cloneStation(st store.Station) store.Station {
 		st.LastBlockHeight = &lastBlockHeight
 	}
 	return st
+}
+
+// cloneDeposit is cloneRecord's counterpart for Deposit. All four
+// outpoint-resolution fields are nullable, so all four are pointers, and all
+// four are copied here.
+//
+// Used in BOTH directions — on the way in at NewDeposit as well as on the way
+// out at PendingDeposits — because aliasing is a defect either way round: a
+// stored caller pointer lets a later write from the caller change fake state
+// with no lock held, which no amount of care inside this package can prevent.
+func cloneDeposit(d store.Deposit) store.Deposit {
+	if d.TxID != nil {
+		txid := *d.TxID
+		d.TxID = &txid
+	}
+	if d.Vout != nil {
+		vout := *d.Vout
+		d.Vout = &vout
+	}
+	if d.Satoshis != nil {
+		satoshis := *d.Satoshis
+		d.Satoshis = &satoshis
+	}
+	if d.InternalizedAt != nil {
+		internalizedAt := *d.InternalizedAt
+		d.InternalizedAt = &internalizedAt
+	}
+	return d
 }
 
 // cloneStations applies cloneStation to every element of stations.

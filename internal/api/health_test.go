@@ -230,12 +230,32 @@ func fatalStore(t *testing.T) store.Store {
 	}
 }
 
+// TestHealthDoesNotTouchTheStore drives /api/health through the REAL ROUTER with
+// a store whose every data method fatals the test.
+//
+// It used to construct fatalStore, discard it into `_`, and then call
+// handleHealth directly — which cannot touch a store it was never given, so the
+// fixture proved nothing and the test would have stayed green with a handler that
+// read the store on every request. Wiring the fatal store into Deps and going in
+// through NewRouter is what makes the claim in the name checkable: anything on the
+// path to this handler that reads a data method now fails the test by name.
+//
+// Health keeps a WORKING pinger, because /api/ready is registered on the same
+// router and its readiness probe legitimately pings; only the DATA members must
+// fatal.
 func TestHealthDoesNotTouchTheStore(t *testing.T) {
-	_ = fatalStore(t) // constructed to prove it is never reached below.
+	fs := fatalStore(t)
+	fs.Health = fake.New()
 
-	rec := doHealthRequest(t, "/api/health", handleHealth(fixedHealthNow))
+	d := testDeps(t)
+	d.Store = fs
+	d.Now = fixedHealthNow
+
+	rec := httptest.NewRecorder()
+	NewRouter(d).ServeHTTP(rec,
+		httptest.NewRequestWithContext(context.Background(), http.MethodGet, pathHealth, nil))
 	if rec.Code != http.StatusOK {
-		t.Fatalf("got status %d, want 200", rec.Code)
+		t.Fatalf("got status %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -349,13 +369,24 @@ func TestReadyPingCarriesADeadline(t *testing.T) {
 	}
 }
 
+// TestReadyDoesNotReadAnyDataMethod drives /api/ready through the REAL ROUTER,
+// for the reason given on TestHealthDoesNotTouchTheStore: calling
+// handleReady(fs.Health) directly hands the handler nothing BUT the pinger, so
+// the fatal data members were unreachable by construction and the fixture
+// asserted nothing. Routed, they are reachable, and a readiness path that grew a
+// data read would fail here by name.
 func TestReadyDoesNotReadAnyDataMethod(t *testing.T) {
 	fs := fatalStore(t)
 	fs.Health = fake.New() // a working pinger; only the DATA members must fatal.
 
-	rec := doHealthRequest(t, "/api/ready", handleReady(fs.Health))
+	d := testDeps(t)
+	d.Store = fs
+
+	rec := httptest.NewRecorder()
+	NewRouter(d).ServeHTTP(rec,
+		httptest.NewRequestWithContext(context.Background(), http.MethodGet, pathReady, nil))
 	if rec.Code != http.StatusOK {
-		t.Fatalf("got status %d, want 200", rec.Code)
+		t.Fatalf("got status %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
 }
 

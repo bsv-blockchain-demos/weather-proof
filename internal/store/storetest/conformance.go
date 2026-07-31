@@ -232,6 +232,85 @@ func RunStoreConformance(t *testing.T, name string, mk func(t *testing.T) store.
 		}
 	})
 
+	// CompleteCountsATxIDOnceNoMatterHowManyActionsUseIt pins what
+	// app_stats.total_tx's own column comment claims: it counts DISTINCT on-chain
+	// transactions.
+	//
+	// The bug this closes: total_tx moved by one per Complete CALL, so the same
+	// txid applied to a second processing set — a retry after a partial failure, a
+	// duplicated action, a chunked publish reusing one transaction — incremented a
+	// "distinct transactions" counter twice, and the dashboard's headline number
+	// drifted upward with nothing able to notice or correct it.
+	//
+	// Two publishes of the SAME txid over two DIFFERENT record sets is the exact
+	// shape, and the two halves of the assertion are what make it discriminating:
+	// total_tx must move once (the transaction is one transaction) while
+	// total_records must move for both records (they really did both complete). A
+	// fix that simply stopped incrementing on a repeat WITHOUT keeping
+	// total_records moving would satisfy a one-sided test.
+	t.Run(name+"/CompleteCountsATxIDOnceNoMatterHowManyActionsUseIt", func(t *testing.T) {
+		ctx := context.Background()
+		s := mk(t)
+		if err := s.Stations.Upsert(ctx, store.Station{StationID: 7100, IsActive: true}); err != nil {
+			t.Fatalf("Upsert: %v", err)
+		}
+
+		const sharedTxID = "shared-tx"
+		completeOne := func(label, id string, offset time.Duration) store.Stats {
+			t.Helper()
+			if _, err := s.Records.Insert(ctx,
+				newConformanceRecord(id, 7100, conformanceBase.Add(offset), 18, "Clear")); err != nil {
+				t.Fatalf("%s: Insert: %v", label, err)
+			}
+			claimed, err := s.Records.ClaimPending(ctx, 1, uuid.Must(uuid.NewV7()))
+			if err != nil || len(claimed) != 1 {
+				t.Fatalf("%s: ClaimPending = (%d, %v), want (1, nil)", label, len(claimed), err)
+			}
+			stats, completeErr := s.Records.Complete(ctx, sharedTxID,
+				[]store.Publication{{RecordID: claimed[0].ID, OutputIndex: 0}})
+			if completeErr != nil {
+				t.Fatalf("%s: Complete: %v", label, completeErr)
+			}
+			return stats
+		}
+
+		first := completeOne("first action", "dup-tx-a", 0)
+		if first.TotalTx != 1 || first.TotalRecords != 1 {
+			t.Fatalf("after the first Complete: TotalTx = %d, TotalRecords = %d, want 1 and 1",
+				first.TotalTx, first.TotalRecords)
+		}
+
+		second := completeOne("second action, same txid", "dup-tx-b", time.Hour)
+		if second.TotalTx != 1 {
+			t.Errorf("TotalTx after a SECOND Complete with the same txid = %d, want 1: "+
+				"app_stats.total_tx counts distinct transactions, not Complete calls", second.TotalTx)
+		}
+		if second.TotalRecords != 2 {
+			t.Errorf("TotalRecords after two Completes = %d, want 2: both records completed, "+
+				"only the transaction repeated", second.TotalRecords)
+		}
+
+		// A DIFFERENT txid still counts, so the ledger is not simply refusing every
+		// increment after the first.
+		if _, err := s.Records.Insert(ctx,
+			newConformanceRecord("dup-tx-c", 7100, conformanceBase.Add(2*time.Hour), 18, "Clear")); err != nil {
+			t.Fatalf("Insert for the distinct-txid control: %v", err)
+		}
+		claimed, err := s.Records.ClaimPending(ctx, 1, uuid.Must(uuid.NewV7()))
+		if err != nil || len(claimed) != 1 {
+			t.Fatalf("ClaimPending for the control = (%d, %v), want (1, nil)", len(claimed), err)
+		}
+		third, completeErr := s.Records.Complete(ctx, "other-tx",
+			[]store.Publication{{RecordID: claimed[0].ID, OutputIndex: 0}})
+		if completeErr != nil {
+			t.Fatalf("Complete with a distinct txid: %v", completeErr)
+		}
+		if third.TotalTx != 2 {
+			t.Errorf("TotalTx after a DISTINCT txid = %d, want 2: the ledger must not suppress "+
+				"the increment for a transaction it has never seen", third.TotalTx)
+		}
+	})
+
 	t.Run(name+"/CompleteAdvancesStationReadingsOnlyForwards", func(t *testing.T) {
 		ctx := context.Background()
 		s := mk(t)
@@ -340,6 +419,21 @@ func RunStoreConformance(t *testing.T, name string, mk func(t *testing.T) store.
 		}
 		if len(pending) != 0 {
 			t.Fatalf("pending after internalize = %d, want 0", len(pending))
+		}
+
+		// A SECOND internalization of the same deposit is refused, and refused
+		// DISTINGUISHABLY: ErrConflict for a deposit that exists but is already
+		// resolved, ErrNotFound only for a suffix that does not exist. Both
+		// implementations used to overwrite instead, which replaced the txid,
+		// vout and satoshis of the first internalization — the only record
+		// tying the deposit to a real outpoint — and reported success.
+		//
+		// This asserts the refusal, not the stored bytes: DepositStore has no
+		// read path for an already-internalized deposit (PendingDeposits filters
+		// them out by definition), so the outpoint columns are unreachable from
+		// the interface. The per-implementation tests check the columns.
+		if againErr := s.Deposits.MarkInternalized(ctx, "s1", "tx2", 9, 999); !errors.Is(againErr, store.ErrConflict) {
+			t.Errorf("second MarkInternalized = %v, want store.ErrConflict", againErr)
 		}
 
 		ok, err := s.Preflight.PreflightOK(ctx, "fp")
@@ -706,43 +800,61 @@ func RunStoreConformance(t *testing.T, name string, mk func(t *testing.T) store.
 
 	t.Run(name+"/ReconcileCandidatesBreaksATiedProcessedAtByIDAscending", func(t *testing.T) {
 		ctx := context.Background()
-		s := mk(t)
-		if err := s.Stations.Upsert(ctx, store.Station{StationID: 6500, IsActive: true}); err != nil {
-			t.Fatalf("Upsert: %v", err)
-		}
-		ids := []string{"rec-c", "rec-a", "rec-b"}
-		for i, id := range ids {
-			ts := conformanceBase.Add(time.Duration(i) * time.Minute)
-			if _, err := s.Records.Insert(ctx, newConformanceRecord(id, 6500, ts, 10, "-")); err != nil {
-				t.Fatalf("Insert %s: %v", id, err)
-			}
-		}
-		claimed, err := s.Records.ClaimPending(ctx, len(ids), uuid.Must(uuid.NewV7()))
-		if err != nil || len(claimed) != len(ids) {
-			t.Fatalf("ClaimPending = (%d, %v), want (%d, nil)", len(claimed), err, len(ids))
-		}
-		pubs := make([]store.Publication, 0, len(claimed))
-		for _, r := range claimed {
-			pubs = append(pubs, store.Publication{RecordID: r.ID, OutputIndex: 0})
-		}
-		// One Complete call stamps every row it touches with a SINGLE
-		// processed_at, so all three tie — same reasoning as the reap case
-		// above.
-		if _, completeErr := s.Records.Complete(ctx, "rec-tx", pubs); completeErr != nil {
-			t.Fatalf("Complete: %v", completeErr)
-		}
 
-		candidates, err := s.Records.ReconcileCandidates(ctx, -time.Hour, 2)
-		if err != nil {
-			t.Fatalf("ReconcileCandidates: %v", err)
-		}
-		if len(candidates) != 2 {
-			t.Fatalf("got %d candidates, want 2", len(candidates))
-		}
-		got := []string{candidates[0].ID, candidates[1].ID}
-		want := []string{"rec-a", "rec-b"}
-		if got[0] != want[0] || got[1] != want[1] {
-			t.Errorf("ReconcileCandidates(limit=2) under a tied processed_at = %v, want %v (id ASC tiebreak)", got, want)
+		// REPEATED, for the reason spelled out on the ReapExpired tie test above:
+		// a dropped tiebreak leaves WHICH two rows a limit-truncated read returns
+		// up to the storage order, and a single trial was measured to catch that
+		// only about half the time. One trial here was the weaker half of a pair
+		// of tests that exist for the same property.
+		//
+		// A fresh store per trial from mk(t), also for the reason given there:
+		// ReconcileCandidates has no station filter, so rows left behind by one
+		// trial would be candidates in the next.
+		const trials = 8
+		for trial := range trials {
+			t.Run(fmt.Sprintf("trial%d", trial), func(t *testing.T) {
+				s := mk(t)
+				if err := s.Stations.Upsert(ctx, store.Station{StationID: 6500, IsActive: true}); err != nil {
+					t.Fatalf("Upsert: %v", err)
+				}
+				ids := []string{"rec-c", "rec-a", "rec-b"}
+				for i, id := range ids {
+					ts := conformanceBase.Add(time.Duration(i) * time.Minute)
+					if _, err := s.Records.Insert(ctx, newConformanceRecord(id, 6500, ts, 10, "-")); err != nil {
+						t.Fatalf("Insert %s: %v", id, err)
+					}
+				}
+				claimed, err := s.Records.ClaimPending(ctx, len(ids), uuid.Must(uuid.NewV7()))
+				if err != nil || len(claimed) != len(ids) {
+					t.Fatalf("ClaimPending = (%d, %v), want (%d, nil)", len(claimed), err, len(ids))
+				}
+				pubs := make([]store.Publication, 0, len(claimed))
+				for _, r := range claimed {
+					pubs = append(pubs, store.Publication{RecordID: r.ID, OutputIndex: 0})
+				}
+				// One Complete call stamps every row it touches with a SINGLE
+				// processed_at, so all three tie — same reasoning as the reap case
+				// above.
+				if _, completeErr := s.Records.Complete(ctx, "rec-tx", pubs); completeErr != nil {
+					t.Fatalf("Complete: %v", completeErr)
+				}
+
+				candidates, err := s.Records.ReconcileCandidates(ctx, -time.Hour, 2)
+				if err != nil {
+					t.Fatalf("ReconcileCandidates: %v", err)
+				}
+				if len(candidates) != 2 {
+					t.Fatalf("got %d candidates, want 2", len(candidates))
+				}
+				// POSITIONAL, unlike the reap case: ReconcileCandidates is a plain
+				// SELECT with its own ORDER BY, so the order it returns is
+				// guaranteed, not an artifact of an UPDATE's processing order.
+				got := []string{candidates[0].ID, candidates[1].ID}
+				want := []string{"rec-a", "rec-b"}
+				if got[0] != want[0] || got[1] != want[1] {
+					t.Errorf("ReconcileCandidates(limit=2) under a tied processed_at = %v, want %v (id ASC tiebreak)", got, want)
+				}
+			})
 		}
 	})
 
@@ -983,6 +1095,76 @@ func RunStoreConformance(t *testing.T, name string, mk func(t *testing.T) store.
 		if stAgain.LastReading == nil || stAgain.LastReading.Equal(corruptedReading) {
 			t.Errorf("second Stations.Get LastReading = %v, want unaffected: the store returned an aliased pointer",
 				stAgain.LastReading)
+		}
+
+		// ─── The WRITE direction, which the reads above cannot reach. ───
+		//
+		// Everything so far mutates a pointer the store RETURNED. The opposite
+		// aliasing is just as real and was uncovered: a store that keeps the
+		// pointer a caller PASSED IN lets a later write at the call site change
+		// stored state with no lock held and no query issued. Postgres cannot do
+		// this — it copies every value during bind — so a fake that does it lets a
+		// test observe a state change production cannot produce.
+		callerLatitude := 51.5
+		if upsertErr := s.Stations.Upsert(ctx, store.Station{
+			StationID: 6001, IsActive: true, Latitude: &callerLatitude,
+		}); upsertErr != nil {
+			t.Fatalf("Upsert with a caller-owned Latitude: %v", upsertErr)
+		}
+		callerLatitude = -33.9 // the caller reusing its own variable
+
+		written, err := s.Stations.Get(ctx, 6001)
+		if err != nil {
+			t.Fatalf("Stations.Get after the caller mutated its input: %v", err)
+		}
+		if written.Latitude == nil || *written.Latitude != 51.5 {
+			latDisplay := "<nil>"
+			if written.Latitude != nil {
+				latDisplay = fmt.Sprintf("%v", *written.Latitude)
+			}
+			t.Errorf("Latitude after the caller mutated its own input = %s, want 51.5: the store retained the caller's pointer",
+				latDisplay)
+		}
+
+		// ─── Deposits, the third pointer-bearing type. ───
+		//
+		// PendingDeposits is the only read path, so this covers the OUT direction
+		// for Deposit; the IN direction has no reachable assertion (NewDeposit's
+		// four pointer fields must all be nil for the deposit to be pending at all).
+		if depErr := s.Deposits.NewDeposit(ctx, store.Deposit{
+			Suffix: "alias-dep", Prefix: "p", Address: "a", LockingScript: "76a9",
+		}); depErr != nil {
+			t.Fatalf("NewDeposit: %v", depErr)
+		}
+		if markErr := s.Deposits.MarkInternalized(ctx, "alias-dep", "alias-dep-tx", 3, 4242); markErr != nil {
+			t.Fatalf("MarkInternalized: %v", markErr)
+		}
+		if depErr := s.Deposits.NewDeposit(ctx, store.Deposit{
+			Suffix: "alias-dep-2", Prefix: "p", Address: "a", LockingScript: "76a9",
+		}); depErr != nil {
+			t.Fatalf("second NewDeposit: %v", depErr)
+		}
+		pendingBefore, err := s.Deposits.PendingDeposits(ctx)
+		if err != nil {
+			t.Fatalf("PendingDeposits: %v", err)
+		}
+		for i := range pendingBefore {
+			// A pending deposit's outpoint fields are nil by definition, so the
+			// only pointer-free mutation available is the whole struct — which
+			// tests nothing. Write through whatever pointer exists; on both
+			// implementations today there is none, and this loop then asserts
+			// only that the slice itself is not the store's own.
+			pendingBefore[i].Prefix = "corrupted-by-caller"
+		}
+		pendingAfter, err := s.Deposits.PendingDeposits(ctx)
+		if err != nil {
+			t.Fatalf("second PendingDeposits: %v", err)
+		}
+		for _, d := range pendingAfter {
+			if d.Prefix == "corrupted-by-caller" {
+				t.Errorf("deposit %q Prefix = %q after the caller wrote to the returned slice: PendingDeposits returned store state",
+					d.Suffix, d.Prefix)
+			}
 		}
 	})
 }

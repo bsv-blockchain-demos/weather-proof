@@ -261,12 +261,31 @@ UPDATE weather_records AS r
  WHERE r.id = u.record_id AND r.status = 'processing'
 RETURNING r.station_id, r.timestamp, r.data`
 
-// bumpAppStatsSQL increments the singleton. total_tx moves by ONE per action,
-// never per record: counting per record is one of the two stats bugs this
-// design fixes.
+// claimTxIDSQL takes the ledger row for txID and reports whether THIS call took
+// it. Zero rows returned means some earlier Complete already claimed it.
+//
+// It runs inside Complete's transaction, so the claim and the counter move
+// together: a rolled-back Complete leaves no ledger row and no increment, and a
+// concurrent Complete with the same txid blocks on the primary key until this
+// one commits, then sees the conflict. See migrations.sql's completed_txids
+// comment for why the counter needs a ledger at all.
+const claimTxIDSQL = `
+INSERT INTO completed_txids (txid) VALUES ($1)
+ON CONFLICT (txid) DO NOTHING
+RETURNING txid`
+
+// bumpAppStatsSQL increments the singleton. total_tx moves by $2, which is 1 for
+// a txid this action is the first to complete and 0 for one already in the
+// ledger — never per record, since counting per record was one of the two stats
+// bugs this design fixes, and never per CALL, which was the other: an action
+// re-completing an existing txid over a second processing set used to increment
+// a column documented as counting DISTINCT transactions.
+//
+// total_records still moves by $1 on EVERY call, because those records really did
+// complete; only the transaction is the thing that can repeat.
 const bumpAppStatsSQL = `
 UPDATE app_stats
-   SET total_tx = total_tx + 1,
+   SET total_tx = total_tx + $2,
        total_records = total_records + $1,
        last_record_write = greatest(coalesce(last_record_write, now()), now()),
        updated_at = now()
@@ -444,7 +463,19 @@ func (s *RecordStore) Complete(ctx context.Context, txID string, pubs []store.Pu
 			conditions = append(conditions, d.conditions)
 		}
 
-		if _, execErr := tx.Exec(ctx, bumpAppStatsSQL, int64(len(moved))); execErr != nil {
+		// Claim the txid BEFORE bumping, so total_tx only counts a transaction
+		// the ledger did not already hold. pgx.ErrNoRows is the "already
+		// claimed" answer, not a failure.
+		txDelta := int64(1)
+		var claimed string
+		switch claimErr := tx.QueryRow(ctx, claimTxIDSQL, txID).Scan(&claimed); {
+		case errors.Is(claimErr, pgx.ErrNoRows):
+			txDelta = 0
+		case claimErr != nil:
+			return classify(claimErr)
+		}
+
+		if _, execErr := tx.Exec(ctx, bumpAppStatsSQL, int64(len(moved)), txDelta); execErr != nil {
 			return classify(execErr)
 		}
 		if _, execErr := tx.Exec(ctx, bumpStationsSQL,
@@ -636,7 +667,18 @@ UPDATE weather_records AS r
 // This builds a VALUE, not SQL text: the statements above are constants and d
 // travels as a parameter through the extended protocol. Microseconds is the
 // finest unit a Postgres interval carries, so no precision is lost.
+//
+// A NEGATIVE d is clamped to zero — the same boundary-value discipline
+// clampLimit and clampOffset apply, and for a sharper reason than tidiness.
+// Every caller uses the interval as an age threshold (`now() - $n`), so a
+// negative value moves that threshold into the FUTURE: ReapExpired would reclaim
+// rows whose lease has not expired, and Requeue would sweep rows younger than
+// the operator asked for. Zero means "everything already due," which is the safe
+// reading of a nonsensical duration.
 func intervalArg(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
 	return strconv.FormatInt(d.Microseconds(), 10) + " microseconds"
 }
 

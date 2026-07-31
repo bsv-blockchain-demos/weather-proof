@@ -47,6 +47,7 @@ func AllQueries() map[string]string {
 		"insertRecord":        insertRecordSQL,
 		"claim":               claimSQL,
 		"completeRecords":     completeRecordsSQL,
+		"claimTxID":           claimTxIDSQL,
 		"bumpAppStats":        bumpAppStatsSQL,
 		"bumpStations":        bumpStationsSQL,
 		"stats":               statsSQL,

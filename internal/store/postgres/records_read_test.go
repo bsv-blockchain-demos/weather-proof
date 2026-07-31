@@ -402,16 +402,24 @@ func TestListAndGetSurviveAConcurrentWriter(t *testing.T) {
 	pool := storetest.Fresh(t, storeSchema)
 	ctx := context.Background()
 	rs := postgres.NewRecordStore(pool)
-	seedPending(t, pool, 30, 1000)
+	ids := seedPending(t, pool, 30, 1000)
 
 	done := make(chan error, 1)
 	go func() {
 		_, err := rs.ClaimPending(ctx, 10, uuid.Must(uuid.NewV7()))
 		done <- err
 	}()
-	for range 20 {
+	for i := range 20 {
 		if _, _, err := rs.List(ctx, store.ListFilter{Limit: 20}); err != nil {
 			t.Errorf("List during a claim: %v", err)
+		}
+		// Get needs its OWN pass through the concurrent window: the name and the
+		// comment above both claim both read paths, but Get runs a different
+		// statement (getRecordSQL — no ORDER BY, no pagination) through a
+		// different collector (CollectExactlyOneRow), so the List calls cover
+		// none of it.
+		if _, err := rs.Get(ctx, ids[i%len(ids)]); err != nil {
+			t.Errorf("Get during a claim: %v", err)
 		}
 	}
 	if err := <-done; err != nil {

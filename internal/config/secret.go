@@ -1,12 +1,3 @@
-// Package config holds process configuration.
-//
-// Only the Secret type lives here in this plan; the env parsing, Validate() and
-// the trusted-proxy CIDR list are the read-API plan's first task. Secret is
-// here rather than next to the DSN that first needed it because it must wrap
-// SERVER_PRIVATE_KEY and TEMPEST_API_KEY as well as the Postgres password, and
-// internal/api may never import internal/store/postgres — so defining it there
-// would guarantee a hand-copied second copy, and the copy is the one that ends
-// up missing a redaction method.
 package config
 
 import (
@@ -21,6 +12,12 @@ const redactedJSON = `"` + redacted + `"`
 
 // Secret is a configuration value that must never appear in a log line, an
 // error message or an HTTP response.
+//
+// It lives in this package rather than next to the DSN that first needed it
+// because it must wrap SERVER_PRIVATE_KEY and TEMPEST_API_KEY as well as the
+// Postgres password, and internal/api may never import
+// internal/store/postgres — so defining it there would guarantee a hand-copied
+// second copy, and the copy is the one that ends up missing a redaction method.
 //
 // All THREE of String, LogValue and MarshalJSON are required, and the third is
 // the one that stops an exfiltration into a response BODY: encoding/json does

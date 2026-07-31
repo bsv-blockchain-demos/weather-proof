@@ -111,7 +111,7 @@ entry is a startup error.
 
 Every refusal carries all four:
 
-```
+```http
 RateLimit-Limit: 720
 RateLimit-Remaining: 0
 RateLimit-Reset: 37
@@ -125,7 +125,8 @@ does not, because it means "you were refused, wait this long".
 A wrong-method request to a limited path **still costs a slot** — the bucket is charged before the method check,
 so a free 405 is not an unmetered way to probe the API.
 
-Three 429 bodies exist and they are deliberately distinct, so a log line says which control fired:
+Three refusal bodies exist and they are deliberately distinct, so a log line says which control fired. Two are
+429; the third is a **503**, as its own row states:
 
 | Body message | Meaning |
 |---|---|
@@ -170,7 +171,7 @@ an attacker poison log correlation.
 
 All three of these are on **every** response including 404, 405, 429, 500, 503 and the SSE stream:
 
-```
+```http
 X-Content-Type-Options: nosniff
 X-Frame-Options: DENY
 Referrer-Policy: no-referrer
@@ -194,7 +195,7 @@ kills every stream at that mark with no error a client can see. The compensating
 
 ## `GET /api/events` — the SSE wire format
 
-```
+```text
 event: stats_update
 data: {"activeStations":3,"totalTx":41,"lastRecordWrite":"2026-04-17T15:40:00.000Z","totalDataPoints":1353}
 

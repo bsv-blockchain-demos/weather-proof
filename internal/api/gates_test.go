@@ -37,6 +37,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -841,9 +842,20 @@ func TestListenAndServeAcceptsAServerWithABaseContext(t *testing.T) {
 		}
 		select {
 		case serveErr := <-done:
+			// A BIND failure lands here, and it is the likely one: the probe
+			// listener above is closed to free the port before the server binds
+			// it, so anything else on the machine can take it in between. It
+			// reads as "listen tcp …: bind: address already in use", which is a
+			// flake in the harness and not a gate failure — say so rather than
+			// leaving a reader to conclude ListenAndServe is broken.
+			if errors.Is(serveErr, syscall.EADDRINUSE) {
+				t.Fatalf("could not bind %s: the port was taken between the probe listener's close and the server's "+
+					"Listen. Harness race, not a gate failure: %v", addr, serveErr)
+			}
 			t.Fatalf("ListenAndServe returned before serving: %v", serveErr)
 		case <-deadline:
-			t.Fatalf("server never accepted a connection on %s", addr)
+			t.Fatalf("server never accepted a connection on %s within 5s "+
+				"(no serve error was reported, so it bound and then did not accept)", addr)
 		case <-time.After(10 * time.Millisecond):
 		}
 	}

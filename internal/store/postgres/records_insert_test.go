@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,9 +18,17 @@ import (
 // because it is never called.
 var _ func(context.Context, store.NewRecord) (bool, error) = (*postgres.RecordStore)(nil).Insert
 
-// fullWeatherData returns a WeatherData with all 33 fields set to distinct,
-// non-zero values, so a jsonb round trip that drops or transposes any field is
+// fullWeatherData returns a WeatherData with all 33 fields set, each to a
+// distinct value, so a jsonb round trip that transposes any two fields is
 // detectable rather than accidentally correct.
+//
+// NOT all non-zero, and the exception matters. IsPrecipLocalYesterdayRainCheck
+// is deliberately false, so the two booleans cover both states — which makes it
+// the ONE field a value comparison cannot prove was stored: a dropped key
+// unmarshals straight back to false and `got != want` never fires. The
+// count(jsonb_object_keys) = DataFieldsPerRecord assertion in
+// TestJSONBRoundTripsAllThirtyThreeFields is what covers that case, and it is
+// required for exactly this reason rather than as a belt-and-braces extra.
 func fullWeatherData() weather.WeatherData {
 	return weather.WeatherData{
 		AirDensity:                      1.204521,
@@ -181,11 +190,11 @@ func TestClassifiedErrorsLeakNothing(t *testing.T) {
 		"ux_records_station_obs", "pkey", "duplicate key", "Key (", "DETAIL", "HINT",
 	}
 	for _, bad := range forbidden {
-		if contains(msg, bad) {
+		if strings.Contains(msg, bad) {
 			t.Errorf("classified error %q contains %q", msg, bad)
 		}
 	}
-	if !contains(msg, "23505") {
+	if !strings.Contains(msg, "23505") {
 		t.Errorf("classified error %q does not name its SQLSTATE", msg)
 	}
 }
@@ -269,20 +278,4 @@ func TestJSONBRoundTripsAllThirtyThreeFields(t *testing.T) {
 	if keys != weather.DataFieldsPerRecord {
 		t.Fatalf("stored jsonb has %d keys, want %d", keys, weather.DataFieldsPerRecord)
 	}
-}
-
-// contains is strings.Contains under a local name, so that the forbidden-token
-// loop reads as a single predicate.
-func contains(haystack, needle string) bool {
-	return len(needle) > 0 && len(haystack) >= len(needle) &&
-		indexOf(haystack, needle) >= 0
-}
-
-func indexOf(haystack, needle string) int {
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return i
-		}
-	}
-	return -1
 }

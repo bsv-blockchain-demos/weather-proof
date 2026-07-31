@@ -3,7 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
-	"strings"
+	"net/url"
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 )
@@ -95,14 +95,32 @@ var ruleSets = map[Subcommand][]func(*Config) error{
 // Validate evaluates every rule of spec §8.15 that sub's required set can
 // satisfy and returns ALL failures joined, never the first (rule 20). No
 // returned error string contains any configured value.
+//
+// An UNDECLARED sub is rejected before any rule runs. A map lookup for a
+// Subcommand that is not one of the six constants yields a nil slice, the loop
+// then executes zero rules, and Validate returns nil for a config nothing has
+// looked at — a typo at a call site, or the zero value Subcommand(""), would
+// boot the process with entirely unvalidated configuration. That is the exact
+// opposite of the fail-closed posture ruleFuelMathUnavailable exists to
+// enforce, so the empty rule set is treated as a programming error rather than
+// as "no rules apply".
+//
+// Naming sub in the message does not breach rule 20's no-echo requirement: a
+// Subcommand is a program-supplied constant chosen by main, never a configured
+// value read from the environment.
 func Validate(c *Config, sub Subcommand) error {
+	rules, declared := ruleSets[sub]
+	if !declared {
+		return fmt.Errorf("unknown subcommand %q: no validation rule set", sub)
+	}
+
 	var errs []error
 
 	if err := c.ParseErrors(); err != nil {
 		errs = append(errs, err)
 	}
 
-	for _, rule := range ruleSets[sub] {
+	for _, rule := range rules {
 		if err := rule(c); err != nil {
 			errs = append(errs, err)
 		}
@@ -129,18 +147,39 @@ func (c *Config) rule1PostgresPassword() error {
 	return nil
 }
 
+// privateKeyHexLen is the accepted SERVER_PRIVATE_KEY length: a secp256k1
+// scalar is 32 bytes, so exactly 64 hex characters, unpadded and with no 0x
+// prefix.
+const privateKeyHexLen = 64
+
 // rule2 requires SERVER_PRIVATE_KEY to be a well-formed private key. The
 // check is deliberately network-independent: BSV private key encoding does
 // not vary by network, so this rule parses the hex with go-sdk's
-// PrivateKeyFromHex and stops there. It does not, and must not, cross-check
-// the key against BSVNetwork — that would be a fabricated constraint the
-// spec does not impose. Skips when the key is empty; that case is rule 1's.
+// PrivateKeyFromHex. It does not, and must not, cross-check the key against
+// BSVNetwork — that would be a fabricated constraint the spec does not impose.
+// Skips when the key is empty; that case is rule 1's.
+//
+// PARSING IS NOT ENOUGH, and this is the part that has to be done here rather
+// than left to the SDK: PrivateKeyFromHex checks for empty input and for a hex
+// decode error and then hands the bytes to PrivateKeyFromBytes, which sets D
+// with new(big.Int).SetBytes and performs NO range check. "00", a 2-character
+// key, and any value at or above the group order all parse without error and
+// then misbehave far away from here, at signing time. A valid scalar is in
+// [1, N-1] and is exactly privateKeyHexLen characters long, so both are
+// checked before this rule reports success.
 func (c *Config) rule2() error {
 	key := c.ServerPrivateKey.Reveal()
 	if key == "" {
 		return nil
 	}
-	if _, err := ec.PrivateKeyFromHex(key); err != nil {
+	if len(key) != privateKeyHexLen {
+		return errors.New("SERVER_PRIVATE_KEY: not a well-formed private key")
+	}
+	priv, err := ec.PrivateKeyFromHex(key)
+	if err != nil {
+		return errors.New("SERVER_PRIVATE_KEY: not a well-formed private key")
+	}
+	if priv.D.Sign() <= 0 || priv.D.Cmp(ec.S256().Params().N) >= 0 {
 		return errors.New("SERVER_PRIVATE_KEY: not a well-formed private key")
 	}
 	return nil
@@ -163,21 +202,37 @@ func (c *Config) rule4() error {
 	return nil
 }
 
-// rule5 requires WALLET_STORAGE_URL to be a bare https host: scheme https,
-// no path beyond "/".
+// rule5 requires WALLET_STORAGE_URL to be a bare https host: scheme https, a
+// non-empty host, no user info, and no path beyond "/".
+//
+// PARSED rather than pattern-matched. A prefix-and-substring check accepted two
+// shapes it should not have: "https://" on its own, which has no host at all
+// and left a REQUIRED value effectively unvalidated, and
+// "https://user:pass@host", which puts a credential in a URL that then appears
+// in outbound request logs. Neither contains a second slash, so neither could
+// be caught by looking for one.
 func (c *Config) rule5() error {
-	u := c.WalletStorageURL
-	if !strings.HasPrefix(u, "https://") {
+	u, parseErr := url.Parse(c.WalletStorageURL)
+	if parseErr != nil || u.Scheme != "https" {
 		return errors.New("WALLET_STORAGE_URL: must use https")
+	}
+	if u.Host == "" {
+		return errors.New("WALLET_STORAGE_URL: must name a host")
+	}
+	if u.User != nil {
+		return errors.New("WALLET_STORAGE_URL: must not carry user info")
 	}
 	// A single TRAILING slash is ACCEPTED, because the doc comment above says
 	// "no path beyond /" and "https://host/" is a plausible value — a copy out
 	// of a browser address bar produces exactly that. Rejecting it failed
 	// closed with a message reading as though a path had been supplied.
-	// Anything after that slash is a path and still fails.
-	rest := strings.TrimSuffix(strings.TrimPrefix(u, "https://"), "/")
-	if strings.Contains(rest, "/") {
+	// Anything after that slash is a path and still fails; url.Parse leaves
+	// "https://host//" with Path == "//", so that case still fails too.
+	if u.Path != "" && u.Path != "/" {
 		return errors.New("WALLET_STORAGE_URL: must be a bare host with no path")
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return errors.New("WALLET_STORAGE_URL: must be a bare host with no query or fragment")
 	}
 	return nil
 }

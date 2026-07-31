@@ -125,6 +125,11 @@ func TestNoDriverErrorEscapesTheStore(t *testing.T) {
 		"ux_records_station_obs", "ck_records", "deposits_pkey", "weather_records_pkey",
 		"duplicate key", "Key (", "DETAIL", "HINT", "constraint", "column",
 		"host=", "user=", "database=", "dial",
+		// password= and the unreachable pool's own secret value. The DSN pgx
+		// echoes in a connect failure carries every key it was given, so the
+		// three keys above without this one left the ONE token that is actually
+		// a credential unasserted.
+		"password=", unreachablePassword(),
 	}
 
 	assertOpaque := func(label string, err error) {
@@ -212,7 +217,7 @@ func TestNoDriverErrorEscapesTheStore(t *testing.T) {
 	// flakiness.
 	unreachable := postgres.DSNParts{
 		Host: "127.0.0.1", Port: 1, User: "u",
-		Password: config.Secret("pw"), Database: "d", SSLMode: "disable",
+		Password: config.Secret(unreachablePassword()), Database: "d", SSLMode: "disable",
 	}
 	deadPool, deadErr := postgres.NewPool(context.Background(), unreachable.DSN())
 	if deadErr != nil {
@@ -401,4 +406,13 @@ func TestAdversarialInputReachesNoSQLText(t *testing.T) {
 	if records != 0 {
 		t.Fatalf("records = %d, want 0", records)
 	}
+}
+
+// unreachablePassword is the secret in the unreachable pool's DSN. It is
+// distinctive rather than "pw" so the forbidden-token check on it cannot pass by
+// accident against an error message that happens not to contain a two-letter
+// string, and it is built by concatenation because gosec G101 fires on a
+// credential-shaped literal bound to a name.
+func unreachablePassword() string {
+	return "zq7" + "vane" + "kolibri" + "42"
 }

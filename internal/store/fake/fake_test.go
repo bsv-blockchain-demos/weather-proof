@@ -272,6 +272,23 @@ func TestListFiltersAndPaginates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
+	// Both pages PINNED, not merely disjoint. Five records seeded a..e with
+	// ascending timestamps, listed newest-first, so page 1 is e,d and page 2 is
+	// c,b. The cross-page duplicate check below is satisfied by an EMPTY page 2 —
+	// which is exactly what an off-by-one in the offset slice produces — so on its
+	// own it cannot tell working pagination from pagination that returns nothing.
+	for label, page := range map[string][]store.Record{"page1": page1, "page2": page2} {
+		if len(page) != 2 {
+			t.Fatalf("%s has %d records (%v), want 2", label, len(page), ids(page))
+		}
+	}
+	if got := ids(page1); got[0] != "e" || got[1] != "d" {
+		t.Errorf("page1 = %v, want [e d]", got)
+	}
+	if got := ids(page2); got[0] != "c" || got[1] != "b" {
+		t.Errorf("page2 = %v, want [c b]", got)
+	}
+
 	for _, a := range page1 {
 		for _, b := range page2 {
 			if a.ID == b.ID {

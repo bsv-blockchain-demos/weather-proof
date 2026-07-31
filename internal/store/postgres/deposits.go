@@ -27,10 +27,28 @@ SELECT ` + depositColumns + `
   FROM deposits WHERE internalized_at IS NULL
  ORDER BY created_at ASC, suffix ASC`
 
+// markInternalizedSQL resolves the outpoint of a deposit that is still pending.
+//
+// `AND internalized_at IS NULL` is the whole point of the statement's shape.
+// Without it the UPDATE matched any row with that suffix, so a second call —
+// a retry, a duplicated operator action, a replayed message — REPLACED the
+// stored txid, vout and satoshis and destroyed the record of the first
+// internalization, which is the only thing tying the deposit to a real
+// outpoint.
+//
+// The two EXISTS columns are what let the caller tell "no such deposit" from
+// "already internalized": with the guard in place, both cases affect zero rows
+// and RowsAffected alone cannot distinguish them. Kept as ONE statement rather
+// than an UPDATE plus a follow-up probe so the answer comes from one snapshot.
 const markInternalizedSQL = `
-UPDATE deposits
-   SET txid = $2, vout = $3, satoshis = $4, internalized_at = now()
- WHERE suffix = $1`
+WITH updated AS (
+  UPDATE deposits
+     SET txid = $2, vout = $3, satoshis = $4, internalized_at = now()
+   WHERE suffix = $1 AND internalized_at IS NULL
+  RETURNING suffix
+)
+SELECT EXISTS (SELECT 1 FROM deposits WHERE suffix = $1) AS found,
+       EXISTS (SELECT 1 FROM updated)                    AS updated`
 
 const preflightOKSQL = `SELECT 1 FROM app_preflight WHERE fingerprint = $1`
 
@@ -81,12 +99,16 @@ func (s *DepositStore) PendingDeposits(ctx context.Context) ([]store.Deposit, er
 func (s *DepositStore) MarkInternalized(
 	ctx context.Context, suffix, txID string, vout int32, sats int64,
 ) error {
-	ct, err := s.db.Exec(ctx, markInternalizedSQL, suffix, txID, vout, sats)
-	if err != nil {
+	var found, updated bool
+	if err := s.db.QueryRow(ctx, markInternalizedSQL, suffix, txID, vout, sats).
+		Scan(&found, &updated); err != nil {
 		return classify(err)
 	}
-	if ct.RowsAffected() == 0 {
+	switch {
+	case !found:
 		return store.ErrNotFound
+	case !updated:
+		return store.ErrConflict
 	}
 	return nil
 }

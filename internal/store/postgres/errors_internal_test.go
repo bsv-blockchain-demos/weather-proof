@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
@@ -125,5 +126,32 @@ func TestClassifyIsIdempotent(t *testing.T) {
 	// idempotency guard itself.
 	if got := classify(store.ErrNotFound); !errors.Is(got, store.ErrNotFound) {
 		t.Fatalf("classify(store.ErrNotFound) = %v, want store.ErrNotFound unchanged", got)
+	}
+}
+
+// TestIntervalArgClampsANegativeDuration is Postgres-independent: it asserts the
+// rendered VALUE, not a query result.
+//
+// The interval is always used as an age threshold (`now() - $n`), so a negative
+// duration would push that threshold into the future and make ReapExpired
+// reclaim unexpired leases. The zero and positive rows are the negative control:
+// a clamp that flattened everything to "0 microseconds" would satisfy the
+// negative row alone.
+func TestIntervalArgClampsANegativeDuration(t *testing.T) {
+	cases := []struct {
+		in   time.Duration
+		want string
+	}{
+		{in: -time.Hour, want: "0 microseconds"},
+		{in: -1, want: "0 microseconds"},
+		{in: 0, want: "0 microseconds"},
+		{in: time.Second, want: "1000000 microseconds"},
+		{in: 5 * time.Minute, want: "300000000 microseconds"},
+	}
+
+	for _, tc := range cases {
+		if got := intervalArg(tc.in); got != tc.want {
+			t.Errorf("intervalArg(%v) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }

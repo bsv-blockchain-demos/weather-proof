@@ -121,6 +121,55 @@ func TestMarkInternalizedUnknownSuffixIsErrNotFound(t *testing.T) {
 	}
 }
 
+// TestMarkInternalizedTwiceIsErrConflictAndWritesNothing is the column-level
+// half of the claim the conformance suite can only assert an error for: the
+// DepositStore interface has no read path for an internalized deposit, so the
+// stored outpoint is only reachable through the pool.
+//
+// Before `AND internalized_at IS NULL` the second call matched the same row,
+// REPLACED the txid, vout and satoshis of the first internalization and returned
+// nil — destroying the only record tying the deposit to a real outpoint, and
+// reporting success while doing it.
+func TestMarkInternalizedTwiceIsErrConflictAndWritesNothing(t *testing.T) {
+	pool := storetest.Fresh(t, storeSchema)
+	ctx := context.Background()
+	ds := postgres.NewDepositStore(pool)
+
+	const firstTxID = "7f2c4e1d8a9b0c3e5f6a7b8c9d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f7081920"
+	const secondTxID = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+
+	d := store.Deposit{Suffix: "twice", Prefix: "p", Address: "a", LockingScript: "76a9"}
+	if err := ds.NewDeposit(ctx, d); err != nil {
+		t.Fatalf("NewDeposit: %v", err)
+	}
+	if err := ds.MarkInternalized(ctx, d.Suffix, firstTxID, 1, 250000); err != nil {
+		t.Fatalf("first MarkInternalized: %v", err)
+	}
+
+	err := ds.MarkInternalized(ctx, d.Suffix, secondTxID, 9, 999)
+	if !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("second MarkInternalized = %v, want store.ErrConflict", err)
+	}
+	// ErrConflict and not ErrNotFound: the row EXISTS, and a caller has to be
+	// able to tell "already resolved" from "no such deposit" — with the guard in
+	// place both affect zero rows.
+	if errors.Is(err, store.ErrNotFound) {
+		t.Error("second MarkInternalized reported ErrNotFound for a deposit that exists")
+	}
+
+	var txid string
+	var vout int32
+	var sats int64
+	if scanErr := pool.QueryRow(ctx,
+		"SELECT txid, vout, satoshis FROM deposits WHERE suffix = $1", d.Suffix).
+		Scan(&txid, &vout, &sats); scanErr != nil {
+		t.Fatalf("re-reading the deposit: %v", scanErr)
+	}
+	if txid != firstTxID || vout != 1 || sats != 250000 {
+		t.Fatalf("outpoint = (%q, %d, %d), want the FIRST internalization preserved", txid, vout, sats)
+	}
+}
+
 func TestPendingDepositsOnAnEmptyTable(t *testing.T) {
 	pool := storetest.Fresh(t, storeSchema)
 	ctx := context.Background()

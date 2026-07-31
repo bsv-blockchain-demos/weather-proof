@@ -124,7 +124,12 @@ func bumpTotalTxAndRecords(t *testing.T, s *fake.Store, n int) {
 	ctx := context.Background()
 	pubs := make([]store.Publication, 0, n)
 	for i := range n {
-		id := "orphan-" + string(rune('a'+i))
+		// strconv.Itoa rather than string(rune('a'+i)): the rune arithmetic stays
+		// unique only while n <= 26 and then walks past 'z' into punctuation and
+		// beyond, so a later caller passing a larger n would get ids that are
+		// still distinct but unreadable — and past the ASCII range, ids whose
+		// bytes depend on UTF-8 encoding.
+		id := "orphan-" + strconv.Itoa(i)
 		ok, insertErr := s.Insert(ctx, store.NewRecord{
 			ID:              id,
 			StationID:       orphanStation,

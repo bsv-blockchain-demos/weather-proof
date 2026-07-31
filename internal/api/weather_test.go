@@ -50,7 +50,7 @@ func seedWeatherFixture(t *testing.T) *fake.Store {
 
 	tied := time.Date(2026, 4, 17, 15, 30, 0, 0, time.UTC)
 
-	txid := "abc123def456abc123def456abc123def456abc123def456abc123def456ab"
+	txid := "abc123def456abc123def456abc123def456abc123def456abc123def456abcd"
 	vout := int32(0)
 	height := int64(879412)
 	processedAt := time.Date(2026, 4, 17, 15, 40, 4, 0, time.UTC)
@@ -141,10 +141,15 @@ func doWeatherListRequest(t *testing.T, recs store.RecordStore, target string) *
 	return rec
 }
 
-// decodedWeatherItem mirrors weatherItem but with a plain string Timestamp
-// field, because isoMillis only implements MarshalJSON — the wire format is
-// write-only from this package's own types, so tests decode the item's
-// scalar fields directly rather than round-tripping through weatherItem.
+// decodedWeatherItem carries ONLY the id, which is all the ordering, filtering
+// and pagination assertions below need. It deliberately does NOT mirror
+// weatherItem: isoMillis implements MarshalJSON and not UnmarshalJSON, so a
+// weatherItem cannot be decoded at all — the wire format is write-only from this
+// package's own types.
+//
+// The timestamp's shape is therefore asserted elsewhere and off a different
+// decode: TestWeatherListTimestampsMatchTheIsoMillisShape reads it out of a
+// map[string]any. Looking for a timestamp assertion on this type finds nothing.
 type decodedWeatherItem struct {
 	ID string `json:"id"`
 }
@@ -510,7 +515,7 @@ func seedWeatherDetailFixture(t *testing.T) *fake.Store {
 	t.Helper()
 	s := fake.New()
 
-	txid := "def456abc123def456abc123def456abc123def456abc123def456abc123de"
+	txid := "def456abc123def456abc123def456abc123def456abc123def456abc123def4"
 	vout := int32(7)
 	height := int64(881234)
 	processedAt := time.Date(2026, 5, 2, 9, 15, 30, 0, time.UTC)

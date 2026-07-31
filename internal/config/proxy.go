@@ -50,9 +50,16 @@ func (t TrustedProxies) Len() int {
 // LogBootState emits EXACTLY ONE WARN when the list is empty, and nothing at
 // all otherwise. The message names the variable, the ConfigMap path and the
 // consequence, per spec §6.1.
+// A nil log is coerced to slog.Default(), the same coercion internal/api makes
+// for the same reason: this method's whole job is to emit one warning at boot,
+// and a nil logger turns that into a nil-pointer panic on the boot path — the one
+// place a missing warning costs the most.
 func (t TrustedProxies) LogBootState(log *slog.Logger) {
 	if len(t.prefixes) > 0 {
 		return
+	}
+	if log == nil {
+		log = slog.Default()
 	}
 	log.Warn("TRUSTED_PROXY_CIDRS empty: forwarding headers ignored, rate limiting is per-proxy-pod and therefore effectively global")
 }

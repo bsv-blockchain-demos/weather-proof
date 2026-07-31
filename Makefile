@@ -133,10 +133,25 @@ check: go-build go-test go-lint
 
 WEATHER_TEST_POSTGRES_DSN ?= postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable
 
+# PG_UP_TIMEOUT bounds the readiness wait. An unbounded `until` loop hangs
+# forever on a container that will never come up — a bad image, a port already
+# bound, a full disk — and both a developer and a CI step read that hang as a
+# slow start rather than a failure. 60 s against a ~2 s observed readiness.
+PG_UP_TIMEOUT ?= 60
+
 pg-up:
 	docker compose up -d postgres
-	@echo "Waiting for Postgres..."
-	@until docker compose exec -T postgres pg_isready -U postgres -d weatherproof_test >/dev/null 2>&1; do sleep 1; done
+	@echo "Waiting for Postgres (up to $(PG_UP_TIMEOUT)s)..."
+	@waited=0; \
+	until docker compose exec -T postgres pg_isready -U postgres -d weatherproof_test >/dev/null 2>&1; do \
+		if [ "$$waited" -ge "$(PG_UP_TIMEOUT)" ]; then \
+			echo "Postgres did not become ready within $(PG_UP_TIMEOUT)s. Recent container logs:"; \
+			docker compose logs --tail 40 postgres; \
+			exit 1; \
+		fi; \
+		sleep 1; \
+		waited=$$((waited + 1)); \
+	done
 	@echo "Postgres ready on 127.0.0.1:5432 (database weatherproof_test)"
 
 pg-down:

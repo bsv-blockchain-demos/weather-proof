@@ -15,8 +15,15 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
+      # persist-credentials: false — checkout writes the job token into
+      # .git/config by default, where every later step of the job can read it,
+      # and this job runs third-party actions and `go run <module>` off the
+      # network. Neither job in this workflow pushes, so the credential has no
+      # use here.
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          persist-credentials: false
 
       # go-version-file tracks go.mod (1.26.5, no toolchain line) so the CI Go
       # version cannot drift away from the one the module declares.
@@ -70,10 +77,16 @@ jobs:
       # redundant with code scanning even once `go` is added to it (the next step
       # of this task does that). The two cover different things: govulncheck
       # scans the dependency graph against the Go vulnerability database, CodeQL
-      # scans first-party code. Pinned to @latest deliberately: a vulnerability
-      # database is only useful when it is current.
+      # scans first-party code.
+      #
+      # The TOOL version is pinned; the DATABASE is not, and the two are
+      # independent. govulncheck queries vuln.go.dev at run time, so a pinned
+      # binary still scans against a current vulnerability database — an earlier
+      # comment here claimed @latest was needed for currency, which conflated
+      # the two. @latest is what is actually harmful: it lets an unreviewed
+      # binary run in CI and lets the gate's behaviour change with no commit.
       - name: Vulnerability scan
-        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 
       # WHAT THIS STEP CATCHES, precisely: a STALE golden — a committed file that
       # no longer equals what the current encoder produces. It regenerates every
@@ -134,8 +147,12 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
+      # persist-credentials: false, for the reason given on the check job's
+      # checkout.
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5.6.0

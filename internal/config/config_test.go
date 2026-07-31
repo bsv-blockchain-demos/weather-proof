@@ -7,6 +7,7 @@ import (
 )
 
 func TestLoadDefaultsMatchTheSpecInventory(t *testing.T) {
+	ClearAmbientEnv(t)
 	c := Load()
 
 	if c.BSVNetwork != "test" {
@@ -90,6 +91,7 @@ func TestLoadDefaultsMatchTheSpecInventory(t *testing.T) {
 }
 
 func TestLoadHasNoDefaultForEitherSecret(t *testing.T) {
+	ClearAmbientEnv(t)
 	c := Load()
 
 	if got := c.ServerPrivateKey.Reveal(); got != "" {
@@ -101,6 +103,7 @@ func TestLoadHasNoDefaultForEitherSecret(t *testing.T) {
 }
 
 func TestLoadReadsEverySetValue(t *testing.T) {
+	ClearAmbientEnv(t)
 	t.Setenv("SERVER_PRIVATE_KEY", "0123456789abcdef"+strings.Repeat("00", 24))
 	t.Setenv("POSTGRES_PASSWORD", "fedcba9876543210"+strings.Repeat("11", 24))
 	t.Setenv("TEMPEST_API_KEY", "aabbccdd"+strings.Repeat("22", 24))
@@ -215,6 +218,7 @@ func TestLoadReadsEverySetValue(t *testing.T) {
 }
 
 func TestLoadRecordsAMalformedIntRatherThanDefaulting(t *testing.T) {
+	ClearAmbientEnv(t)
 	t.Setenv("API_PORT", "abc")
 
 	c := Load()
@@ -235,6 +239,7 @@ func TestLoadRecordsAMalformedIntRatherThanDefaulting(t *testing.T) {
 }
 
 func TestLoadRecordsAMalformedDurationRatherThanDefaulting(t *testing.T) {
+	ClearAmbientEnv(t)
 	t.Setenv("POLL_RATE", "5 minutes")
 
 	c := Load()
@@ -252,6 +257,7 @@ func TestLoadRecordsAMalformedDurationRatherThanDefaulting(t *testing.T) {
 }
 
 func TestLoadRecordsAMalformedBoolRatherThanDefaulting(t *testing.T) {
+	ClearAmbientEnv(t)
 	t.Setenv("WEATHER_ALLOW_MULTICLAIM_SCRIPTS", "yes")
 
 	c := Load()
@@ -269,6 +275,7 @@ func TestLoadRecordsAMalformedBoolRatherThanDefaulting(t *testing.T) {
 }
 
 func TestLoadParseErrorNamesTheVariableAndNotTheValue(t *testing.T) {
+	ClearAmbientEnv(t)
 	t.Setenv("PG_PORT", "hunter2")
 
 	c := Load()
@@ -286,6 +293,7 @@ func TestLoadParseErrorNamesTheVariableAndNotTheValue(t *testing.T) {
 }
 
 func TestLoadSplitsTrustedProxyCIDRsOnCommaAndTrims(t *testing.T) {
+	ClearAmbientEnv(t)
 	t.Setenv("TRUSTED_PROXY_CIDRS", " 10.0.0.0/8 , 192.168.0.0/16 ")
 
 	c := Load()
@@ -302,6 +310,7 @@ func TestLoadSplitsTrustedProxyCIDRsOnCommaAndTrims(t *testing.T) {
 }
 
 func TestLoadTreatsAnEmptyTrustedProxyCIDRsAsEmptyNotOneBlankEntry(t *testing.T) {
+	ClearAmbientEnv(t)
 	t.Setenv("TRUSTED_PROXY_CIDRS", "")
 
 	c := Load()

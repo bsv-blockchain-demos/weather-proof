@@ -18,8 +18,15 @@ func wellFormedPrivateKey() string {
 // validConfig returns a *Config that passes every rule sub's required set
 // needs, built from Load() after t.Setenv of the two secrets and
 // WALLET_STORAGE_URL.
+//
+// ClearAmbientEnv first, and it is not optional: every "accepts" test below
+// asserts Validate() == nil against this fixture, so an exported BSV_NETWORK,
+// PG_SSLMODE, LOG_LEVEL or PROOF_RATE_LIMIT_PER_MIN in the surrounding shell
+// would make a rule fail for a reason the test never mentions. The fixture has
+// to be a known one, not the developer's environment plus four overrides.
 func validConfig(t *testing.T) *config.Config {
 	t.Helper()
+	config.ClearAmbientEnv(t)
 	t.Setenv("SERVER_PRIVATE_KEY", wellFormedPrivateKey())
 	t.Setenv("POSTGRES_PASSWORD", "fedcba9876543210"+strings.Repeat("11", 24))
 	t.Setenv("WALLET_STORAGE_URL", "https://storage.example")
@@ -85,6 +92,68 @@ func TestRule2AcceptsAWellFormedKey(t *testing.T) {
 	err := config.Validate(c, config.SubDeposit)
 	if err != nil {
 		t.Fatalf("Validate() = %v, want nil", err)
+	}
+}
+
+// TestRule2RejectsAnOutOfRangeScalar covers what PARSING alone accepts.
+// PrivateKeyFromHex validates hex and nothing else — PrivateKeyFromBytes sets D
+// with SetBytes and never range-checks it — so each value here decoded cleanly
+// and passed rule 2 before the bound check existed, then misbehaved at signing
+// time instead. The well-formed key is in the table as the negative control: a
+// rule that rejected everything would satisfy the reject rows alone.
+func TestRule2RejectsAnOutOfRangeScalar(t *testing.T) {
+	// N-1 and N, built from the secp256k1 order's hex. N is the first invalid
+	// scalar; N-1 is the last valid one, so the pair pins the boundary rather
+	// than merely testing somewhere either side of it.
+	const orderMinusOne = "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364140"
+	const order = "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141"
+
+	cases := []struct {
+		name   string
+		key    string
+		accept bool
+	}{
+		{name: "zero", key: strings.Repeat("00", 32), accept: false},
+		{name: "at the group order", key: order, accept: false},
+		{name: "above the group order", key: strings.Repeat("ff", 32), accept: false},
+		{name: "one below the group order", key: orderMinusOne, accept: true},
+		{name: "short but valid hex", key: "01", accept: false},
+		{name: "well formed", key: wellFormedPrivateKey(), accept: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig(t)
+			c.ServerPrivateKey = config.Secret(tc.key)
+
+			// SubDeposit requires rule 2 but never rules 8/10/12/13.
+			err := config.Validate(c, config.SubDeposit)
+			if tc.accept && err != nil {
+				t.Fatalf("Validate() = %v, want nil", err)
+			}
+			if !tc.accept && (err == nil || !strings.Contains(err.Error(), "SERVER_PRIVATE_KEY")) {
+				t.Fatalf("Validate() = %v, want an error naming SERVER_PRIVATE_KEY", err)
+			}
+		})
+	}
+}
+
+// TestValidateRejectsAnUndeclaredSubcommand pins the fail-closed behaviour of
+// the rule-set lookup. A map miss yields a nil slice, so before the explicit
+// check the loop ran zero rules and Validate returned nil — a call site typo,
+// or the zero value Subcommand(""), booted the process against configuration
+// nothing had looked at. The config here is deliberately BROKEN in a way every
+// declared subcommand would reject, so a nil return could only mean the rules
+// never ran.
+func TestValidateRejectsAnUndeclaredSubcommand(t *testing.T) {
+	for _, sub := range []config.Subcommand{"", "srve", "Serve"} {
+		c := validConfig(t)
+		c.PGHost = ""
+		c.BSVNetwork = "nonsense"
+
+		if err := config.Validate(c, sub); err == nil {
+			t.Errorf("Validate(_, %q) = nil, want an error: no rule set is declared for it", sub)
+		}
 	}
 }
 
@@ -170,6 +239,17 @@ func TestRule5AcceptsABareHTTPSHost(t *testing.T) {
 		{url: "https://storage.example/", accept: true},
 		{url: "https://storage.example/v1", accept: false},
 		{url: "https://storage.example//", accept: false},
+		// The two shapes a prefix-and-substring check could not see, because
+		// neither contains a second slash: a scheme with no host at all, which
+		// left a REQUIRED value effectively unvalidated, and embedded
+		// credentials, which end up in outbound request logs.
+		{url: "https://", accept: false},
+		// Assembled from parts, per this file's gosec G101 convention: a literal
+		// URL with embedded credentials is flagged even in a test that exists to
+		// prove the value is REJECTED.
+		{url: "https://" + "user" + ":" + "pass" + "@storage.example", accept: false},
+		{url: "https://storage.example?k=v", accept: false},
+		{url: "https://storage.example#frag", accept: false},
 	}
 
 	for _, tc := range cases {
@@ -580,6 +660,7 @@ func TestRule20NeverEchoesAConfiguredValue(t *testing.T) {
 }
 
 func TestReducedRuleSetSucceedsForDepositRequeueAndStatsRecompute(t *testing.T) {
+	config.ClearAmbientEnv(t)
 	t.Setenv("SERVER_PRIVATE_KEY", wellFormedPrivateKey())
 	t.Setenv("POSTGRES_PASSWORD", "fedcba9876543210"+strings.Repeat("11", 24))
 	t.Setenv("WALLET_STORAGE_URL", "https://storage.example")
@@ -597,6 +678,7 @@ func TestReducedRuleSetSucceedsForDepositRequeueAndStatsRecompute(t *testing.T) 
 }
 
 func TestValidateSurfacesLoadParseErrors(t *testing.T) {
+	config.ClearAmbientEnv(t)
 	t.Setenv("SERVER_PRIVATE_KEY", wellFormedPrivateKey())
 	t.Setenv("POSTGRES_PASSWORD", "fedcba9876543210"+strings.Repeat("11", 24))
 	t.Setenv("WALLET_STORAGE_URL", "https://storage.example")

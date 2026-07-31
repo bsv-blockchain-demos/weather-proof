@@ -117,10 +117,10 @@ B2 can start as soon as `internal/store/store.go` and `internal/store/interfaces
 ## Task 1: Store types, the exact status literals, and the nullable-pointer rule
 
 **Files:**
-- Create: `/Users/personal/git/demos/weather-chain/internal/store/store.go`
-- Create: `/Users/personal/git/demos/weather-chain/internal/store/store_test.go`
-- Modify: `/Users/personal/git/demos/weather-chain/go.mod`
-- Modify: `/Users/personal/git/demos/weather-chain/go.sum`
+- Create: `internal/store/store.go`
+- Create: `internal/store/store_test.go`
+- Modify: `go.mod`
+- Modify: `go.sum`
 
 **Interfaces:**
 
@@ -269,11 +269,11 @@ type Deposit struct {
 
 - [ ] **Add the `google/uuid` dependency.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && go get github.com/google/uuid@v1.6.0
+  cd "$(git rev-parse --show-toplevel)" && go get github.com/google/uuid@v1.6.0
   ```
   Expected output includes `go: added github.com/google/uuid v1.6.0`. (`go.mod` currently has one direct requirement, `github.com/bsv-blockchain/go-sdk v1.3.2`.)
 
-- [ ] **Write the failing test.** Create `/Users/personal/git/demos/weather-chain/internal/store/store_test.go` with exactly this content:
+- [ ] **Write the failing test.** Create `internal/store/store_test.go` with exactly this content:
   ```go
   package store_test
 
@@ -454,11 +454,11 @@ type Deposit struct {
 
 - [ ] **Run it and see it fail.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && go test ./internal/store/... -count=1
+  cd "$(git rev-parse --show-toplevel)" && go test ./internal/store/... -count=1
   ```
   Expected failure text: `internal/store/store_test.go:9:2: no required module provides package github.com/bsv-blockchain-demos/weather-proof/internal/store` (or `build constraints exclude all Go files` / `package … is not in std` — any variant reporting that the package does not exist).
 
-- [ ] **Write the implementation.** Create `/Users/personal/git/demos/weather-chain/internal/store/store.go` with exactly this content:
+- [ ] **Write the implementation.** Create `internal/store/store.go` with exactly this content:
   ```go
   // Package store is the persistence seam.
   //
@@ -729,19 +729,19 @@ type Deposit struct {
 
 - [ ] **Run it and see it pass.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && go test ./internal/store/... -count=1
+  cd "$(git rev-parse --show-toplevel)" && go test ./internal/store/... -count=1
   ```
   Expected output: `ok  	github.com/bsv-blockchain-demos/weather-proof/internal/store	0.0Xs`.
 
 - [ ] **Run the full gate.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && go mod tidy && git diff --exit-code go.mod go.sum ; go vet ./... && go build ./... && go test ./... -count=1
+  cd "$(git rev-parse --show-toplevel)" && go mod tidy && git diff --exit-code go.mod go.sum ; go vet ./... && go build ./... && go test ./... -count=1
   ```
   `git diff --exit-code` is expected to print the go.mod/go.sum diff and exit non-zero the FIRST time (because `go get` already wrote them and they are not yet committed) — that is fine, it is the uncommitted-change diff, not a tidiness failure. `go vet`, `go build` and `go test` must all pass with no output beyond `ok` lines.
 
 - [ ] **Commit.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && git add go.mod go.sum internal/store/store.go internal/store/store_test.go && git commit -m "store: domain types and the four status literals"
+  cd "$(git rev-parse --show-toplevel)" && git add go.mod go.sum internal/store/store.go internal/store/store_test.go && git commit -m "store: domain types and the four status literals"
   ```
 
 ---
@@ -749,9 +749,9 @@ type Deposit struct {
 ## Task 2: Store interfaces, the aggregate Store struct, and the in-memory fake
 
 **Files:**
-- Create: `/Users/personal/git/demos/weather-chain/internal/store/interfaces.go`
-- Create: `/Users/personal/git/demos/weather-chain/internal/store/fake/fake.go`
-- Create: `/Users/personal/git/demos/weather-chain/internal/store/fake/fake_test.go`
+- Create: `internal/store/interfaces.go`
+- Create: `internal/store/fake/fake.go`
+- Create: `internal/store/fake/fake_test.go`
 
 **Interfaces:**
 
@@ -836,7 +836,7 @@ func (s *Store) SeedStation(st store.Station)
 
 ### Steps
 
-- [ ] **Write the failing test.** Create `/Users/personal/git/demos/weather-chain/internal/store/fake/fake_test.go` with exactly this content:
+- [ ] **Write the failing test.** Create `internal/store/fake/fake_test.go` with exactly this content:
   ```go
   package fake_test
 
@@ -1328,11 +1328,11 @@ func (s *Store) SeedStation(st store.Station)
 
 - [ ] **Run it and see it fail.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && go test ./internal/store/... -count=1
+  cd "$(git rev-parse --show-toplevel)" && go test ./internal/store/... -count=1
   ```
   Expected failure text: `no required module provides package github.com/bsv-blockchain-demos/weather-proof/internal/store/fake` — the package does not exist yet.
 
-- [ ] **Write the interfaces.** Create `/Users/personal/git/demos/weather-chain/internal/store/interfaces.go` with exactly this content:
+- [ ] **Write the interfaces.** Create `internal/store/interfaces.go` with exactly this content:
   ```go
   package store
 
@@ -1482,7 +1482,7 @@ func (s *Store) SeedStation(st store.Station)
   }
   ```
 
-- [ ] **Write the fake.** Create `/Users/personal/git/demos/weather-chain/internal/store/fake/fake.go` with exactly this content:
+- [ ] **Write the fake.** Create `internal/store/fake/fake.go` with exactly this content:
   ```go
   // Package fake is an in-memory store.Store for tests that must not touch a
   // database.
@@ -2250,19 +2250,19 @@ func (s *Store) SeedStation(st store.Station)
 
 - [ ] **Run it and see it pass.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && go test ./internal/store/... -count=1
+  cd "$(git rev-parse --show-toplevel)" && go test ./internal/store/... -count=1
   ```
   Expected output: two `ok` lines, one for `internal/store` and one for `internal/store/fake`.
 
 - [ ] **Run the full gate.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && go vet ./... && go build ./... && go test ./... -count=1 && make go-lint
+  cd "$(git rev-parse --show-toplevel)" && go vet ./... && go build ./... && go test ./... -count=1 && make go-lint
   ```
   All must pass. If `make go-lint` is not wired to run locally, run `golangci-lint run --max-same-issues=0` — the repo pins v2.12.2, and the flag is what stops a fourth identical finding being hidden.
 
 - [ ] **Commit.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && git add internal/store/interfaces.go internal/store/fake && git commit -m "store: interfaces, the aggregate seam, and an in-memory fake"
+  cd "$(git rev-parse --show-toplevel)" && git add internal/store/interfaces.go internal/store/fake && git commit -m "store: interfaces, the aggregate seam, and an in-memory fake"
   ```
 
 ---
@@ -2270,13 +2270,13 @@ func (s *Store) SeedStation(st store.Station)
 ## Task 3: The pgx pool, the DSN, the Secret type, and the simple-protocol assertion
 
 **Files:**
-- Create: `/Users/personal/git/demos/weather-chain/internal/config/secret.go`
-- Create: `/Users/personal/git/demos/weather-chain/internal/config/secret_test.go`
-- Create: `/Users/personal/git/demos/weather-chain/internal/store/postgres/dsn.go`
-- Create: `/Users/personal/git/demos/weather-chain/internal/store/postgres/pool.go`
-- Create: `/Users/personal/git/demos/weather-chain/internal/store/postgres/pool_test.go`
-- Modify: `/Users/personal/git/demos/weather-chain/go.mod`
-- Modify: `/Users/personal/git/demos/weather-chain/go.sum`
+- Create: `internal/config/secret.go`
+- Create: `internal/config/secret_test.go`
+- Create: `internal/store/postgres/dsn.go`
+- Create: `internal/store/postgres/pool.go`
+- Create: `internal/store/postgres/pool_test.go`
+- Modify: `go.mod`
+- Modify: `go.sum`
 
 **Interfaces:**
 
@@ -2320,11 +2320,11 @@ func ClosePool(pool *pgxpool.Pool, budget time.Duration) error
 
 - [ ] **Add the pgx dependency.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && go get github.com/jackc/pgx/v5@v5.10.0
+  cd "$(git rev-parse --show-toplevel)" && go get github.com/jackc/pgx/v5@v5.10.0
   ```
   Expected output includes `go: added github.com/jackc/pgx/v5 v5.10.0` plus indirects `github.com/jackc/pgpassfile`, `github.com/jackc/pgservicefile`, `github.com/jackc/puddle/v2`, `golang.org/x/sync`, `golang.org/x/text`.
 
-- [ ] **Write the failing Secret test.** Create `/Users/personal/git/demos/weather-chain/internal/config/secret_test.go` with exactly this content:
+- [ ] **Write the failing Secret test.** Create `internal/config/secret_test.go` with exactly this content:
   ```go
   package config_test
 
@@ -2416,11 +2416,11 @@ func ClosePool(pool *pgxpool.Pool, budget time.Duration) error
 
 - [ ] **Run it and see it fail.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && go test ./internal/config/... -count=1
+  cd "$(git rev-parse --show-toplevel)" && go test ./internal/config/... -count=1
   ```
   Expected failure text: `no required module provides package github.com/bsv-blockchain-demos/weather-proof/internal/config` — the package does not exist yet.
 
-- [ ] **Write the Secret implementation.** Create `/Users/personal/git/demos/weather-chain/internal/config/secret.go` with exactly this content:
+- [ ] **Write the Secret implementation.** Create `internal/config/secret.go` with exactly this content:
   ```go
   // Package config holds process configuration.
   //
@@ -2473,11 +2473,11 @@ func ClosePool(pool *pgxpool.Pool, budget time.Duration) error
 
 - [ ] **Run it and see it pass.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && go test ./internal/config/... -count=1 -v
+  cd "$(git rev-parse --show-toplevel)" && go test ./internal/config/... -count=1 -v
   ```
   Expected output: `--- PASS: TestSecretNeverPrints`, then `ok`.
 
-- [ ] **Write the failing pool test.** Create `/Users/personal/git/demos/weather-chain/internal/store/postgres/pool_test.go` with exactly this content:
+- [ ] **Write the failing pool test.** Create `internal/store/postgres/pool_test.go` with exactly this content:
   ```go
   package postgres_test
 
@@ -2636,11 +2636,11 @@ func ClosePool(pool *pgxpool.Pool, budget time.Duration) error
 
 - [ ] **Run it and see it fail.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && go test ./internal/store/postgres/... -count=1
+  cd "$(git rev-parse --show-toplevel)" && go test ./internal/store/postgres/... -count=1
   ```
   Expected failure text: `no required module provides package github.com/bsv-blockchain-demos/weather-proof/internal/store/postgres`.
 
-- [ ] **Write the DSN implementation.** Create `/Users/personal/git/demos/weather-chain/internal/store/postgres/dsn.go` with exactly this content:
+- [ ] **Write the DSN implementation.** Create `internal/store/postgres/dsn.go` with exactly this content:
   ```go
   package postgres
 
@@ -2694,7 +2694,7 @@ func ClosePool(pool *pgxpool.Pool, budget time.Duration) error
   }
   ```
 
-- [ ] **Write the pool implementation.** Create `/Users/personal/git/demos/weather-chain/internal/store/postgres/pool.go` with exactly this content:
+- [ ] **Write the pool implementation.** Create `internal/store/postgres/pool.go` with exactly this content:
   ```go
   // Package postgres is the pgx/v5 implementation of the store interfaces.
   //
@@ -2809,19 +2809,19 @@ func ClosePool(pool *pgxpool.Pool, budget time.Duration) error
 
 - [ ] **Run it and see it pass.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && go test ./internal/store/postgres/... -count=1 -v -run 'TestDSN|TestPoolConfig|TestClosePool'
+  cd "$(git rev-parse --show-toplevel)" && go test ./internal/store/postgres/... -count=1 -v -run 'TestDSN|TestPoolConfig|TestClosePool'
   ```
   Expected output: `--- PASS` for `TestDSNEscapesAndNeverConcatenates`, `TestPoolConfigRejectsSimpleProtocol`, `TestPoolConfigAcceptsTheDefaultMode`, `TestPoolConfigErrorDoesNotLeakThePassword`, `TestClosePoolHonorsItsBudget`, then `ok`.
 
 - [ ] **Run the full gate.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && go mod tidy && gofmt -w ./internal && test -z "$(gofmt -l ./internal)" && go vet ./... && go build ./... && go test ./... -count=1 && golangci-lint run --max-same-issues=0
+  cd "$(git rev-parse --show-toplevel)" && go mod tidy && gofmt -w ./internal && test -z "$(gofmt -l ./internal)" && go vet ./... && go build ./... && go test ./... -count=1 && golangci-lint run --max-same-issues=0
   ```
   All must pass with no findings. `gofmt -l` must print nothing: it is an enabled formatter, and `--max-same-issues=0` is what stops a fourth identical finding being hidden.
 
 - [ ] **Commit.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && git add go.mod go.sum internal/config internal/store/postgres && git commit -m "config: a Secret that redacts in fmt, slog and JSON; postgres: pool and DSN assembly"
+  cd "$(git rev-parse --show-toplevel)" && git add go.mod go.sum internal/config internal/store/postgres && git commit -m "config: a Secret that redacts in fmt, slog and JSON; postgres: pool and DSN assembly"
   ```
 
 ---
@@ -2829,8 +2829,8 @@ func ClosePool(pool *pgxpool.Pool, budget time.Duration) error
 ## Task 4: The Postgres test harness — skip locally, fail loudly in CI
 
 **Files:**
-- Create: `/Users/personal/git/demos/weather-chain/internal/store/storetest/storetest.go`
-- Create: `/Users/personal/git/demos/weather-chain/internal/store/storetest/storetest_test.go`
+- Create: `internal/store/storetest/storetest.go`
+- Create: `internal/store/storetest/storetest_test.go`
 
 **Interfaces:**
 
@@ -2857,7 +2857,7 @@ func Pool(t testing.TB, schema Schema, maxConns int32) *pgxpool.Pool
 
 ### Steps
 
-- [ ] **Write the failing test.** Create `/Users/personal/git/demos/weather-chain/internal/store/storetest/storetest_test.go` with exactly this content:
+- [ ] **Write the failing test.** Create `internal/store/storetest/storetest_test.go` with exactly this content:
   ```go
   package storetest_test
 
@@ -2976,11 +2976,11 @@ func Pool(t testing.TB, schema Schema, maxConns int32) *pgxpool.Pool
 
 - [ ] **Run it and see it fail.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && go test ./internal/store/storetest/... -count=1
+  cd "$(git rev-parse --show-toplevel)" && go test ./internal/store/storetest/... -count=1
   ```
   Expected failure text: `no required module provides package github.com/bsv-blockchain-demos/weather-proof/internal/store/storetest`.
 
-- [ ] **Write the harness.** Create `/Users/personal/git/demos/weather-chain/internal/store/storetest/storetest.go` with exactly this content:
+- [ ] **Write the harness.** Create `internal/store/storetest/storetest.go` with exactly this content:
   ```go
   // Package storetest is the Postgres test harness.
   //
@@ -3157,13 +3157,13 @@ func Pool(t testing.TB, schema Schema, maxConns int32) *pgxpool.Pool
 
 - [ ] **Run it and see it SKIP with no DSN.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && go test ./internal/store/storetest/... -count=1 -v
+  cd "$(git rev-parse --show-toplevel)" && go test ./internal/store/storetest/... -count=1 -v
   ```
   Expected output: `--- PASS: TestSchemaValidateCatchesAMismatch`, `--- PASS: TestEnvVarNamesAreStable`, and `--- SKIP: TestPoolPinsTheSchemaOnEveryConnection` / `--- SKIP: TestPoolStartsFromAnEmptySchema` with the message `set WEATHER_TEST_POSTGRES_DSN to run this test (make pg-up; see docs/testing-postgres.md)`, then `ok`.
 
 - [ ] **See the tripwire fire.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/storetest/... -count=1 -run TestPoolStartsFromAnEmptySchema
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/storetest/... -count=1 -run TestPoolStartsFromAnEmptySchema
   ```
   Expected output: `--- FAIL: TestPoolStartsFromAnEmptySchema` with `WEATHER_TEST_POSTGRES_DSN is unset while WEATHER_TEST_REQUIRE_POSTGRES is set: the Postgres suite must never skip in CI`, then `FAIL`. This is the whole point of the harness — see it fail before trusting it.
 
@@ -3177,19 +3177,19 @@ func Pool(t testing.TB, schema Schema, maxConns int32) *pgxpool.Pool
   ```
   Expected output: `/var/run/postgresql:5432 - accepting connections` (typically after 1-3 seconds). Then run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/storetest/... -count=1 -v
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/storetest/... -count=1 -v
   ```
   Expected output: four `--- PASS` lines and `ok`. No SKIPs.
 
 - [ ] **Run the full gate.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && gofmt -w ./internal && test -z "$(gofmt -l ./internal)" && go vet ./... && go build ./... && go test ./... -count=1 && golangci-lint run --max-same-issues=0
+  cd "$(git rev-parse --show-toplevel)" && gofmt -w ./internal && test -z "$(gofmt -l ./internal)" && go vet ./... && go build ./... && go test ./... -count=1 && golangci-lint run --max-same-issues=0
   ```
   All must pass.
 
 - [ ] **Commit.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && git add internal/store/storetest && git commit -m "storetest: Postgres harness that skips locally and fails loudly in CI"
+  cd "$(git rev-parse --show-toplevel)" && git add internal/store/storetest && git commit -m "storetest: Postgres harness that skips locally and fails loudly in CI"
   ```
 
 ---
@@ -3197,10 +3197,10 @@ func Pool(t testing.TB, schema Schema, maxConns int32) *pgxpool.Pool
 ## Task 5: CI — the Postgres job, the vacuous-green guard, Make targets, compose, docs
 
 **Files:**
-- Modify: `/Users/personal/git/demos/weather-chain/.github/workflows/go.yml`
-- Modify: `/Users/personal/git/demos/weather-chain/Makefile`
-- Modify: `/Users/personal/git/demos/weather-chain/docker-compose.yaml`
-- Create: `/Users/personal/git/demos/weather-chain/docs/testing-postgres.md`
+- Modify: `.github/workflows/go.yml`
+- Modify: `Makefile`
+- Modify: `docker-compose.yaml`
+- Create: `docs/testing-postgres.md`
 
 **Interfaces:**
 
@@ -3212,17 +3212,17 @@ Produces: the environment contract every later task's tests run under — CI job
 
 - [ ] **Prove the vacuous-green detector passes on the current tree first.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && go list -f '{{if and (eq (len .TestGoFiles) 0) (eq (len .XTestGoFiles) 0)}}{{.ImportPath}}{{end}}' ./...
+  cd "$(git rev-parse --show-toplevel)" && go list -f '{{if and (eq (len .TestGoFiles) 0) (eq (len .XTestGoFiles) 0)}}{{.ImportPath}}{{end}}' ./...
   ```
   Expected output: nothing at all. If it prints a package path, that package has no tests and this task cannot proceed until it does. (`{{...}}` without a leading `$` is not GitHub expression syntax, so it needs no escaping in YAML.)
 
 - [ ] **Prove the detector actually detects.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && mkdir -p internal/probe && printf 'package probe\n\n// Doc is a placeholder.\nconst Doc = "x"\n' > internal/probe/probe.go && go list -f '{{if and (eq (len .TestGoFiles) 0) (eq (len .XTestGoFiles) 0)}}{{.ImportPath}}{{end}}' ./... ; rm -rf internal/probe
+  cd "$(git rev-parse --show-toplevel)" && mkdir -p internal/probe && printf 'package probe\n\n// Doc is a placeholder.\nconst Doc = "x"\n' > internal/probe/probe.go && go list -f '{{if and (eq (len .TestGoFiles) 0) (eq (len .XTestGoFiles) 0)}}{{.ImportPath}}{{end}}' ./... ; rm -rf internal/probe
   ```
   Expected output: `github.com/bsv-blockchain-demos/weather-proof/internal/probe`, then the directory is removed. Confirm with `git status --short` that the tree is clean again.
 
-- [ ] **Add the guard step to the existing `check` job.** In `/Users/personal/git/demos/weather-chain/.github/workflows/go.yml`, immediately AFTER the existing `- name: Test` step (the one running `go test ./... -count=1`) and BEFORE the `- name: Lint` step, insert exactly — **at the SAME indentation as the existing `- name: Test` step, which is 6 spaces for the `- name:` line**; every YAML block in this plan is written at its final file indentation, and pasting this one two columns short makes `- name:` a sibling of `steps:` rather than an item of it, which fails to parse:
+- [ ] **Add the guard step to the existing `check` job.** In `.github/workflows/go.yml`, immediately AFTER the existing `- name: Test` step (the one running `go test ./... -count=1`) and BEFORE the `- name: Lint` step, insert exactly — **at the SAME indentation as the existing `- name: Test` step, which is 6 spaces for the `- name:` line**; every YAML block in this plan is written at its final file indentation, and pasting this one two columns short makes `- name:` a sibling of `steps:` rather than an item of it, which fails to parse:
   ```yaml
         # `go test ./...` exits 0 for a package with no test files, and -count=1
         # does not help: it defeats a stale cached PASS, not a vacuous one. This
@@ -3240,7 +3240,7 @@ Produces: the environment contract every later task's tests run under — CI job
   ```
   Change nothing else in the `check` job.
 
-- [ ] **Add the Postgres job.** At the END of `/Users/personal/git/demos/weather-chain/.github/workflows/go.yml`, as a second entry under the existing top-level `jobs:` key (same indentation as `check:`), append exactly:
+- [ ] **Add the Postgres job.** At the END of `.github/workflows/go.yml`, as a second entry under the existing top-level `jobs:` key (same indentation as `check:`), append exactly:
   ```yaml
     # Postgres-backed store tests, in a SEPARATE job so the `check` job stays
     # byte-identical apart from the untested-package guard and a service-container
@@ -3327,7 +3327,7 @@ Produces: the environment contract every later task's tests run under — CI job
 
 - [ ] **Verify the workflow YAML parses AND that both vacuous-green guards are in it.** The parse check alone would accept a workflow whose assertions had been quietly dropped, which is the failure mode these steps exist to prevent. Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && python3 -c "
+  cd "$(git rev-parse --show-toplevel)" && python3 -c "
   import yaml
   d = yaml.safe_load(open('.github/workflows/go.yml'))
   print(sorted(d['jobs']))
@@ -3349,7 +3349,7 @@ Produces: the environment contract every later task's tests run under — CI job
   ```
   Expected output: `['check', 'integration']`, then `9 check steps`, then `OK`.
 
-- [ ] **Add the Make targets.** At the END of `/Users/personal/git/demos/weather-chain/Makefile`, append exactly:
+- [ ] **Add the Make targets.** At the END of `Makefile`, append exactly:
   ```makefile
 
   # ---------------------------------------------------------------------------
@@ -3384,7 +3384,7 @@ Produces: the environment contract every later task's tests run under — CI job
   	go test -race -count=1 -timeout 10m ./internal/store/...
   ```
 
-- [ ] **Add the compose service, additively.** In `/Users/personal/git/demos/weather-chain/docker-compose.yaml`, add a `postgres` service alongside the existing `mongodb`, `app`, `frontend` and `setup` services — do not remove or edit any of them, because `app` is the live TypeScript backend and still needs `MONGO_URI`. Insert exactly:
+- [ ] **Add the compose service, additively.** In `docker-compose.yaml`, add a `postgres` service alongside the existing `mongodb`, `app`, `frontend` and `setup` services — do not remove or edit any of them, because `app` is the live TypeScript backend and still needs `MONGO_URI`. Insert exactly:
   ```yaml
     # Added for the Go store's tests. Purely additive: mongodb stays because the
     # `app` service is the running TypeScript backend and requires MONGO_URI.
@@ -3419,11 +3419,11 @@ Produces: the environment contract every later task's tests run under — CI job
 
 - [ ] **Verify compose still parses and nothing was lost.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && docker compose config --services | sort
+  cd "$(git rev-parse --show-toplevel)" && docker compose config --services | sort
   ```
   Expected output, in this order: `app`, `frontend`, `mongodb`, `postgres`. (`setup` is behind its profile and does not list.)
 
-- [ ] **Write the docs.** Create `/Users/personal/git/demos/weather-chain/docs/testing-postgres.md` with exactly this content:
+- [ ] **Write the docs.** Create `docs/testing-postgres.md` with exactly this content:
   ```markdown
   # Running the Postgres store tests
 
@@ -3532,19 +3532,19 @@ Produces: the environment contract every later task's tests run under — CI job
 
 - [ ] **Verify the whole local loop.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && docker rm -f wp-pg >/dev/null 2>&1 ; make pg-up && make go-test-pg
+  cd "$(git rev-parse --show-toplevel)" && docker rm -f wp-pg >/dev/null 2>&1 ; make pg-up && make go-test-pg
   ```
   Expected output: `Postgres ready on 127.0.0.1:5432 (database weatherproof_test)` then `ok` lines for `internal/store`, `internal/store/fake`, `internal/store/postgres` and `internal/store/storetest`, with NO `[no tests to run]` and NO skip messages.
 
 - [ ] **Verify the untested-package guard and the rest of `check`.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && go mod tidy && git diff --exit-code go.mod go.sum && go vet ./... && go build ./... && go test ./... -count=1 && go list -f '{{if and (eq (len .TestGoFiles) 0) (eq (len .XTestGoFiles) 0)}}{{.ImportPath}}{{end}}' ./... && golangci-lint run --max-same-issues=0
+  cd "$(git rev-parse --show-toplevel)" && go mod tidy && git diff --exit-code go.mod go.sum && go vet ./... && go build ./... && go test ./... -count=1 && go list -f '{{if and (eq (len .TestGoFiles) 0) (eq (len .XTestGoFiles) 0)}}{{.ImportPath}}{{end}}' ./... && golangci-lint run --max-same-issues=0
   ```
   Expected: no output from `git diff`, no output from `go list`, and `ok` lines plus `0 issues` from the linter.
 
 - [ ] **Commit.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && git add .github/workflows/go.yml Makefile docker-compose.yaml docs/testing-postgres.md && git commit -m "ci: postgres service job, untested-package guard, pg make targets"
+  cd "$(git rev-parse --show-toplevel)" && git add .github/workflows/go.yml Makefile docker-compose.yaml docs/testing-postgres.md && git commit -m "ci: postgres service job, untested-package guard, pg make targets"
   ```
 
 ---
@@ -3552,10 +3552,10 @@ Produces: the environment contract every later task's tests run under — CI job
 ## Task 6: migrations.sql, the migration runner, and the schema invariants
 
 **Files:**
-- Create: `/Users/personal/git/demos/weather-chain/internal/store/postgres/migrations.sql`
-- Create: `/Users/personal/git/demos/weather-chain/internal/store/postgres/migrate.go`
-- Create: `/Users/personal/git/demos/weather-chain/internal/store/postgres/migrations_test.go`
-- Modify: `/Users/personal/git/demos/weather-chain/internal/store/storetest/storetest.go`
+- Create: `internal/store/postgres/migrations.sql`
+- Create: `internal/store/postgres/migrate.go`
+- Create: `internal/store/postgres/migrations_test.go`
+- Modify: `internal/store/storetest/storetest.go`
 
 **Interfaces:**
 
@@ -3575,7 +3575,7 @@ func Fresh(t testing.TB, schema Schema) *pgxpool.Pool // Pool with maxConns 16, 
 
 ### Steps
 
-- [ ] **Write the failing test.** Create `/Users/personal/git/demos/weather-chain/internal/store/postgres/migrations_test.go` with exactly this content:
+- [ ] **Write the failing test.** Create `internal/store/postgres/migrations_test.go` with exactly this content:
   ```go
   package postgres_test
 
@@ -3929,11 +3929,11 @@ func Fresh(t testing.TB, schema Schema) *pgxpool.Pool // Pool with maxConns 16, 
 
 - [ ] **Run it and see it fail.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/... -count=1
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/... -count=1
   ```
   Expected failure text: `undefined: postgres.Migrate` and `undefined: storetest.Fresh` — the compile fails before any test runs.
 
-- [ ] **Write the migration script.** Create `/Users/personal/git/demos/weather-chain/internal/store/postgres/migrations.sql` with exactly this content:
+- [ ] **Write the migration script.** Create `internal/store/postgres/migrations.sql` with exactly this content:
   ```sql
   -- The whole schema, applied at startup and idempotent.
   --
@@ -4066,7 +4066,7 @@ func Fresh(t testing.TB, schema Schema) *pgxpool.Pool // Pool with maxConns 16, 
   );
   ```
 
-- [ ] **Write the migration runner.** Create `/Users/personal/git/demos/weather-chain/internal/store/postgres/migrate.go` with exactly this content:
+- [ ] **Write the migration runner.** Create `internal/store/postgres/migrate.go` with exactly this content:
   ```go
   package postgres
 
@@ -4115,7 +4115,7 @@ func Fresh(t testing.TB, schema Schema) *pgxpool.Pool // Pool with maxConns 16, 
   }
   ```
 
-- [ ] **Add `Fresh` to the harness.** Append exactly this to `/Users/personal/git/demos/weather-chain/internal/store/storetest/storetest.go`:
+- [ ] **Add `Fresh` to the harness.** Append exactly this to `internal/store/storetest/storetest.go`:
   ```go
   // freshMaxConns is the pool size Fresh hands out. It must stay above the
   // goroutine count of every concurrency test in the tree, because a pool
@@ -4139,25 +4139,25 @@ func Fresh(t testing.TB, schema Schema) *pgxpool.Pool // Pool with maxConns 16, 
 
 - [ ] **Run it and see it pass.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/... -count=1 -v
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/... -count=1 -v
   ```
   Expected output: `--- PASS` for `TestMigrateIsIdempotent`, `TestAppStatsIsASingleton`, `TestStatusCheckConstraintRejectsAnUnknownStatus`, `TestProcessingRequiresALease`, `TestCompletedRequiresPublicationColumns`, `TestChainStatusCheckConstraint`, `TestDedupeIndexRaisesAUniqueViolation`, `TestStationSearchVectorIsGenerated`, `TestUUIDv7IsNotAvailableButGenRandomUUIDIs`, `TestCreatedAtIsTheTransactionTimestamp`, plus the five Task 3 pool tests (`TestSecretNeverPrints` moved to `internal/config` with the type), then `ok`.
 
 - [ ] **Confirm it still passes when each test runs alone.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=1 -run TestProcessingRequiresALease -v && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=3 -run TestMigrateIsIdempotent -v
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=1 -run TestProcessingRequiresALease -v && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=3 -run TestMigrateIsIdempotent -v
   ```
   Both must pass. This is the ordering-independence check: an assertion that only discriminates under a `-run` filter, or only on the first `-count` iteration, is not a test.
 
 - [ ] **Run the full gate.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && gofmt -w ./internal && test -z "$(gofmt -l ./internal)" && go vet ./... && go build ./... && go test ./... -count=1 && golangci-lint run --max-same-issues=0
+  cd "$(git rev-parse --show-toplevel)" && gofmt -w ./internal && test -z "$(gofmt -l ./internal)" && go vet ./... && go build ./... && go test ./... -count=1 && golangci-lint run --max-same-issues=0
   ```
   All must pass with no findings.
 
 - [ ] **Commit.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && git add internal/store/postgres/migrations.sql internal/store/postgres/migrate.go internal/store/postgres/migrations_test.go internal/store/storetest/storetest.go && git commit -m "postgres: the schema, an idempotent migration runner, and its invariants"
+  cd "$(git rev-parse --show-toplevel)" && git add internal/store/postgres/migrations.sql internal/store/postgres/migrate.go internal/store/postgres/migrations_test.go internal/store/storetest/storetest.go && git commit -m "postgres: the schema, an idempotent migration runner, and its invariants"
   ```
 
 ---
@@ -4165,9 +4165,9 @@ func Fresh(t testing.TB, schema Schema) *pgxpool.Pool // Pool with maxConns 16, 
 ## Task 7: Insert with ON CONFLICT dedupe, and the error classifier
 
 **Files:**
-- Create: `/Users/personal/git/demos/weather-chain/internal/store/postgres/errors.go`
-- Create: `/Users/personal/git/demos/weather-chain/internal/store/postgres/records.go`
-- Create: `/Users/personal/git/demos/weather-chain/internal/store/postgres/records_insert_test.go`
+- Create: `internal/store/postgres/errors.go`
+- Create: `internal/store/postgres/records.go`
+- Create: `internal/store/postgres/records_insert_test.go`
 
 **Interfaces:**
 
@@ -4190,7 +4190,7 @@ func (s *RecordStore) Insert(ctx context.Context, r store.NewRecord) (bool, erro
 
 ### Steps
 
-- [ ] **Write the failing test.** Create `/Users/personal/git/demos/weather-chain/internal/store/postgres/records_insert_test.go` with exactly this content:
+- [ ] **Write the failing test.** Create `internal/store/postgres/records_insert_test.go` with exactly this content:
   ```go
   package postgres_test
 
@@ -4438,11 +4438,11 @@ func (s *RecordStore) Insert(ctx context.Context, r store.NewRecord) (bool, erro
 
 - [ ] **Run it and see it fail.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/... -count=1
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/... -count=1
   ```
   Expected failure text: `undefined: postgres.RecordStore` and `undefined: postgres.NewRecordStore` — the package does not compile.
 
-- [ ] **Write the error classifier.** Create `/Users/personal/git/demos/weather-chain/internal/store/postgres/errors.go` with exactly this content:
+- [ ] **Write the error classifier.** Create `internal/store/postgres/errors.go` with exactly this content:
   ```go
   package postgres
 
@@ -4537,7 +4537,7 @@ func (s *RecordStore) Insert(ctx context.Context, r store.NewRecord) (bool, erro
   }
   ```
 
-- [ ] **Write the record store and Insert.** Create `/Users/personal/git/demos/weather-chain/internal/store/postgres/records.go` with exactly this content:
+- [ ] **Write the record store and Insert.** Create `internal/store/postgres/records.go` with exactly this content:
   ```go
   package postgres
 
@@ -4610,19 +4610,19 @@ func (s *RecordStore) Insert(ctx context.Context, r store.NewRecord) (bool, erro
 
 - [ ] **Run it and see it pass.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/... -count=1 -v -run 'TestInsert|TestClassified|TestJSONB'
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/... -count=1 -v -run 'TestInsert|TestClassified|TestJSONB'
   ```
   Expected output: `--- PASS: TestInsertReturnsTrueForAFreshRow`, `--- PASS: TestInsertDedupeIsFalseAndNotAnError`, `--- PASS: TestInsertPrimaryKeyCollisionIsErrConflict`, `--- PASS: TestClassifiedErrorsLeakNothing`, `--- PASS: TestJSONBRoundTripsAllThirtyThreeFields`, then `ok`.
 
 - [ ] **Run the whole package and the lint gate.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/... -count=1 && gofmt -w ./internal && test -z "$(gofmt -l ./internal)" && go vet ./... && go build ./... && golangci-lint run --max-same-issues=0
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/... -count=1 && gofmt -w ./internal && test -z "$(gofmt -l ./internal)" && go vet ./... && go build ./... && golangci-lint run --max-same-issues=0
   ```
   All must pass with `0 issues`.
 
 - [ ] **Commit.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && git add internal/store/postgres/errors.go internal/store/postgres/records.go internal/store/postgres/records_insert_test.go && git commit -m "postgres: Insert with structural dedupe, and an error classifier that leaks nothing"
+  cd "$(git rev-parse --show-toplevel)" && git add internal/store/postgres/errors.go internal/store/postgres/records.go internal/store/postgres/records_insert_test.go && git commit -m "postgres: Insert with structural dedupe, and an error classifier that leaks nothing"
   ```
 
 ---
@@ -4630,8 +4630,8 @@ func (s *RecordStore) Insert(ctx context.Context, r store.NewRecord) (bool, erro
 ## Task 8: ClaimPending — the atomic claim, proven against a real race
 
 **Files:**
-- Modify: `/Users/personal/git/demos/weather-chain/internal/store/postgres/records.go`
-- Create: `/Users/personal/git/demos/weather-chain/internal/store/postgres/records_claim_test.go`
+- Modify: `internal/store/postgres/records.go`
+- Create: `internal/store/postgres/records_claim_test.go`
 
 **Interfaces:**
 
@@ -4646,7 +4646,7 @@ func collectRecords(rows pgx.Rows) ([]store.Record, error) // package-internal h
 
 ### Steps
 
-- [ ] **Write the failing test.** Create `/Users/personal/git/demos/weather-chain/internal/store/postgres/records_claim_test.go` with exactly this content:
+- [ ] **Write the failing test.** Create `internal/store/postgres/records_claim_test.go` with exactly this content:
   ```go
   package postgres_test
 
@@ -5047,11 +5047,11 @@ func collectRecords(rows pgx.Rows) ([]store.Record, error) // package-internal h
 
 - [ ] **Run it and see it fail to compile.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/... -count=1
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/... -count=1
   ```
   Expected failure text: `(*postgres.RecordStore)(nil).ClaimPending undefined (type *postgres.RecordStore has no field or method ClaimPending)`.
 
-- [ ] **Write the NAIVE implementation deliberately, so the test can be seen to have power.** A concurrency test that has never been observed to fail is worthless. Append exactly this to `/Users/personal/git/demos/weather-chain/internal/store/postgres/records.go`:
+- [ ] **Write the NAIVE implementation deliberately, so the test can be seen to have power.** A concurrency test that has never been observed to fail is worthless. Append exactly this to `internal/store/postgres/records.go`:
   ```go
   // naiveClaimSelectSQL and naiveClaimUpdateSQL are a TEMPORARY, DELIBERATELY
   // BROKEN claim. They exist for exactly one test run, so that
@@ -5100,11 +5100,11 @@ func collectRecords(rows pgx.Rows) ([]store.Record, error) // package-internal h
 
 - [ ] **Run it and SEE THE DOUBLE-ALLOCATION.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=1 -race -run TestClaimPendingNeverDoubleClaims -v
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=1 -race -run TestClaimPendingNeverDoubleClaims -v
   ```
   Expected failure text, with the numbers varying by schedule but `worst` typically equal to the worker count: `claim double-allocated 7 of 7 rows (worst row claimed 12 times)`. All twelve workers read the same first seven pending ids in their unlocked SELECT and then each wrote them. **Do not proceed until you have seen this fail.** If it passes, the pool is too small (check the `MaxConns` guard fired) or the workers are not actually overlapping.
 
-- [ ] **Replace it with the atomic claim.** In `/Users/personal/git/demos/weather-chain/internal/store/postgres/records.go`, DELETE `naiveClaimSelectSQL`, `naiveClaimUpdateSQL` and the temporary `ClaimPending`, and append exactly this in their place:
+- [ ] **Replace it with the atomic claim.** In `internal/store/postgres/records.go`, DELETE `naiveClaimSelectSQL`, `naiveClaimUpdateSQL` and the temporary `ClaimPending`, and append exactly this in their place:
   ```go
   // claimSQL is the atomic claim.
   //
@@ -5193,19 +5193,19 @@ func collectRecords(rows pgx.Rows) ([]store.Record, error) // package-internal h
 
 - [ ] **Run it and see it pass.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=1 -race -run TestClaimPending -v
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=1 -race -run TestClaimPending -v
   ```
   Expected output: `--- PASS` for `TestClaimPendingNeverDoubleClaims`, `TestClaimPendingStampsExactlyOneRefPerCall`, `TestClaimPendingPreservesAPriorRef`, `TestClaimPendingIsFIFOAcrossATiedBatch`, `TestClaimPendingOnAnEmptyQueueReturnsNoRows`, then `ok`.
 
 - [ ] **Repeat the race, because one pass is weak evidence.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=10 -race -run TestClaimPendingNeverDoubleClaims
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=10 -race -run TestClaimPendingNeverDoubleClaims
   ```
   Expected output: `ok` with no failures. This is the same shape the CI job runs at `-count=5`.
 
 - [ ] **Reproduce the measured limit of the FIFO test, so you know what it is and is not worth.** Delete `, c.id ASC` from `claimSQL`'s subquery `ORDER BY`, and ALSO comment out the `CREATE INDEX … ix_records_status_created` statement in `migrations.sql` — dropping the index with `psql` does nothing, because `storetest.Fresh` re-applies the migration before every test and recreates it. Then run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=3 -run TestClaimPendingIsFIFOAcrossATiedBatch -v
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=3 -run TestClaimPendingIsFIFOAcrossATiedBatch -v
   ```
   **Expected output: PASS, three times.** That is the measured result on `postgres:17-alpine`, and it is recorded here rather than left as a surprise: at twenty rows in a freshly loaded heap the untied query agrees with the tied one, with or without the index. So this test is NOT a regression gate on the tiebreaker, and its doc comment says so — check that it still does. If your run instead FAILS (`first claim = [...], want the batch [...]`), that is better news, not a problem: the test discriminates on your setup, so strengthen the comment to say so.
 
@@ -5213,19 +5213,19 @@ func collectRecords(rows pgx.Rows) ([]store.Record, error) // package-internal h
 
 - [ ] **Confirm the plan Postgres chose.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && docker compose exec -T postgres psql -U postgres -d weatherproof_test -c "SET search_path TO wp_test_store; EXPLAIN SELECT c.id FROM weather_records AS c WHERE c.status = 'pending' ORDER BY c.created_at ASC, c.id ASC LIMIT 7 FOR UPDATE SKIP LOCKED;"
+  cd "$(git rev-parse --show-toplevel)" && docker compose exec -T postgres psql -U postgres -d weatherproof_test -c "SET search_path TO wp_test_store; EXPLAIN SELECT c.id FROM weather_records AS c WHERE c.status = 'pending' ORDER BY c.created_at ASC, c.id ASC LIMIT 7 FOR UPDATE SKIP LOCKED;"
   ```
   Expected output: a plan containing `LockRows`, `Index Scan using ix_records_status_created` and `Index Cond: (status = 'pending'::text)`. (The schema is dropped at test cleanup, so run this while a test is not in progress; if the table is absent, re-run one test first. A `Seq Scan` here means `ix_records_status_created` is missing from the migration.)
 
 - [ ] **Run the full gate.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/... -count=1 -race && gofmt -w ./internal && test -z "$(gofmt -l ./internal)" && go vet ./... && go build ./... && golangci-lint run --max-same-issues=0
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/... -count=1 -race && gofmt -w ./internal && test -z "$(gofmt -l ./internal)" && go vet ./... && go build ./... && golangci-lint run --max-same-issues=0
   ```
   All must pass with `0 issues`.
 
 - [ ] **Commit.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && git add internal/store/postgres/records.go internal/store/postgres/records_claim_test.go && git commit -m "postgres: atomic claim via FOR UPDATE SKIP LOCKED, with one ref per batch"
+  cd "$(git rev-parse --show-toplevel)" && git add internal/store/postgres/records.go internal/store/postgres/records_claim_test.go && git commit -m "postgres: atomic claim via FOR UPDATE SKIP LOCKED, with one ref per batch"
   ```
 
 ---
@@ -5233,8 +5233,8 @@ func collectRecords(rows pgx.Rows) ([]store.Record, error) // package-internal h
 ## Task 9: Complete — records, app_stats and station counters in one transaction
 
 **Files:**
-- Modify: `/Users/personal/git/demos/weather-chain/internal/store/postgres/records.go`
-- Create: `/Users/personal/git/demos/weather-chain/internal/store/postgres/records_complete_test.go`
+- Modify: `internal/store/postgres/records.go`
+- Create: `internal/store/postgres/records_complete_test.go`
 
 **Interfaces:**
 
@@ -5253,7 +5253,7 @@ func (s *RecordStore) Complete(ctx context.Context, txID string, pubs []store.Pu
 
 ### Steps
 
-- [ ] **Write the failing test.** Create `/Users/personal/git/demos/weather-chain/internal/store/postgres/records_complete_test.go` with exactly this content:
+- [ ] **Write the failing test.** Create `internal/store/postgres/records_complete_test.go` with exactly this content:
   ```go
   package postgres_test
 
@@ -5654,11 +5654,11 @@ func (s *RecordStore) Complete(ctx context.Context, txID string, pubs []store.Pu
 
 - [ ] **Run it and see it fail.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/... -count=1
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/... -count=1
   ```
   Expected failure text: `(*postgres.RecordStore)(nil).Complete undefined (type *postgres.RecordStore has no field or method Complete)`.
 
-- [ ] **Write the implementation.** Append exactly this to `/Users/personal/git/demos/weather-chain/internal/store/postgres/records.go`, and add `"time"` and `"github.com/bsv-blockchain-demos/weather-proof/internal/weather"` to its import block:
+- [ ] **Write the implementation.** Append exactly this to `internal/store/postgres/records.go`, and add `"time"` and `"github.com/bsv-blockchain-demos/weather-proof/internal/weather"` to its import block:
   ```go
   // completeRecordsSQL publishes one batch under one txid.
   //
@@ -5867,19 +5867,19 @@ func (s *RecordStore) Complete(ctx context.Context, txID string, pubs []store.Pu
 
 - [ ] **Run it and see it pass.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=1 -race -run TestComplete -v
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=1 -race -run TestComplete -v
   ```
   Expected output: `--- PASS` for `TestCompleteMovesRecordsStatsAndStationsTogether`, `TestCompleteAcrossTwoStationsSplitsTheCounters`, `TestCompleteIsANoOpWhenNothingIsProcessing`, `TestCompleteIsTolerantOfAMissingStation`, `TestCompleteRollsBackWhollyOnFailure`, then `ok`.
 
 - [ ] **Run the full gate.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/... -count=1 -race && gofmt -w ./internal && test -z "$(gofmt -l ./internal)" && go vet ./... && go build ./... && golangci-lint run --max-same-issues=0
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/... -count=1 -race && gofmt -w ./internal && test -z "$(gofmt -l ./internal)" && go vet ./... && go build ./... && golangci-lint run --max-same-issues=0
   ```
   All must pass with `0 issues`.
 
 - [ ] **Commit.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && git add internal/store/postgres/records.go internal/store/postgres/records_complete_test.go && git commit -m "postgres: Complete moves records, stats and station counters in one transaction"
+  cd "$(git rev-parse --show-toplevel)" && git add internal/store/postgres/records.go internal/store/postgres/records_complete_test.go && git commit -m "postgres: Complete moves records, stats and station counters in one transaction"
   ```
 
 ---
@@ -5887,8 +5887,8 @@ func (s *RecordStore) Complete(ctx context.Context, txID string, pubs []store.Pu
 ## Task 10: The three classifier writes — FailPermanent, RequeueInfra, MarkUnknown
 
 **Files:**
-- Modify: `/Users/personal/git/demos/weather-chain/internal/store/postgres/records.go`
-- Create: `/Users/personal/git/demos/weather-chain/internal/store/postgres/records_classify_test.go`
+- Modify: `internal/store/postgres/records.go`
+- Create: `internal/store/postgres/records_classify_test.go`
 
 **Interfaces:**
 
@@ -5904,7 +5904,7 @@ func (s *RecordStore) MarkUnknown(ctx context.Context, ids []string, reason stri
 
 ### Steps
 
-- [ ] **Write the failing test.** Create `/Users/personal/git/demos/weather-chain/internal/store/postgres/records_classify_test.go` with exactly this content:
+- [ ] **Write the failing test.** Create `internal/store/postgres/records_classify_test.go` with exactly this content:
   ```go
   package postgres_test
 
@@ -6094,11 +6094,11 @@ func (s *RecordStore) MarkUnknown(ctx context.Context, ids []string, reason stri
   ```
 - [ ] **Run it and see it fail.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/... -count=1
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/... -count=1
   ```
   Expected failure text: `(*postgres.RecordStore)(nil).FailPermanent undefined (type *postgres.RecordStore has no field or method FailPermanent)`, plus the same for `RequeueInfra` and `MarkUnknown`.
 
-- [ ] **Write the implementation.** Append exactly this to `/Users/personal/git/demos/weather-chain/internal/store/postgres/records.go`:
+- [ ] **Write the implementation.** Append exactly this to `internal/store/postgres/records.go`:
   ```go
   // The three terminal writes the publisher's error classifier makes. All three
   // share the same guard — `AND r.status = 'processing'` — so a write for a row
@@ -6167,19 +6167,19 @@ func (s *RecordStore) MarkUnknown(ctx context.Context, ids []string, reason stri
 
 - [ ] **Run it and see it pass.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=1 -race -run 'TestFailPermanent|TestRequeueInfra|TestMarkUnknown|TestClassifierWrites' -v
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=1 -race -run 'TestFailPermanent|TestRequeueInfra|TestMarkUnknown|TestClassifierWrites' -v
   ```
   Expected output: `--- PASS` for `TestFailPermanentSpendsTheAttemptBudget`, `TestRequeueInfraKeepsTheBudgetAndNeedsNoAdopt`, `TestMarkUnknownRequiresAnAdoptCheck`, `TestClassifierWritesOnlyTouchProcessingRows`, then `ok`.
 
 - [ ] **Run the full gate.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/... -count=1 -race && gofmt -w ./internal && test -z "$(gofmt -l ./internal)" && go vet ./... && go build ./... && golangci-lint run --max-same-issues=0
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/... -count=1 -race && gofmt -w ./internal && test -z "$(gofmt -l ./internal)" && go vet ./... && go build ./... && golangci-lint run --max-same-issues=0
   ```
   All must pass with `0 issues`.
 
 - [ ] **Commit.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && git add internal/store/postgres/records.go internal/store/postgres/records_classify_test.go && git commit -m "postgres: the three classifier writes and their adopt/attempt semantics"
+  cd "$(git rev-parse --show-toplevel)" && git add internal/store/postgres/records.go internal/store/postgres/records_classify_test.go && git commit -m "postgres: the three classifier writes and their adopt/attempt semantics"
   ```
 
 ---
@@ -6187,8 +6187,8 @@ func (s *RecordStore) MarkUnknown(ctx context.Context, ids []string, reason stri
 ## Task 11: The requeue transitions — ReapExpired and Requeue
 
 **Files:**
-- Modify: `/Users/personal/git/demos/weather-chain/internal/store/postgres/records.go`
-- Create: `/Users/personal/git/demos/weather-chain/internal/store/postgres/records_requeue_test.go`
+- Modify: `internal/store/postgres/records.go`
+- Create: `internal/store/postgres/records_requeue_test.go`
 
 **Interfaces:**
 
@@ -6204,7 +6204,7 @@ func (s *RecordStore) Requeue(ctx context.Context, f store.RequeueFilter) (int64
 
 ### Steps
 
-- [ ] **Write the failing test.** Create `/Users/personal/git/demos/weather-chain/internal/store/postgres/records_requeue_test.go` with exactly this content:
+- [ ] **Write the failing test.** Create `internal/store/postgres/records_requeue_test.go` with exactly this content:
   ```go
   package postgres_test
 
@@ -6565,11 +6565,11 @@ func (s *RecordStore) Requeue(ctx context.Context, f store.RequeueFilter) (int64
 
 - [ ] **Run it and see it fail.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/... -count=1
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/... -count=1
   ```
   Expected failure text: `(*postgres.RecordStore)(nil).ReapExpired undefined` and `(*postgres.RecordStore)(nil).Requeue undefined`.
 
-- [ ] **Write the implementation.** Append exactly this to `/Users/personal/git/demos/weather-chain/internal/store/postgres/records.go`, and add `"strconv"` to its import block:
+- [ ] **Write the implementation.** Append exactly this to `internal/store/postgres/records.go`, and add `"strconv"` to its import block:
   ```go
   // reapExpiredSQL reclaims rows stranded in processing past the lease.
   //
@@ -6688,19 +6688,19 @@ func (s *RecordStore) Requeue(ctx context.Context, f store.RequeueFilter) (int64
 
 - [ ] **Run it and see it pass.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=1 -race -run 'TestReap|TestRequeue' -v
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=1 -race -run 'TestReap|TestRequeue' -v
   ```
   Expected output: `--- PASS` for `TestReapExpiredReclaimsOnlyStrandedRows`, `TestReapExpiredHonorsItsLimit`, `TestReapExpiredOnAnIdleQueueReturnsNothing`, `TestRequeueDryRunCountsWithoutWriting`, `TestRequeueWritesAndFiltersByStation`, `TestRequeueRespectsTheSinceWindow`, then `ok`.
 
 - [ ] **Run the full gate.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/... -count=1 -race && gofmt -w ./internal && test -z "$(gofmt -l ./internal)" && go vet ./... && go build ./... && golangci-lint run --max-same-issues=0
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/... -count=1 -race && gofmt -w ./internal && test -z "$(gofmt -l ./internal)" && go vet ./... && go build ./... && golangci-lint run --max-same-issues=0
   ```
   All must pass with `0 issues`.
 
 - [ ] **Commit.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && git add internal/store/postgres/records.go internal/store/postgres/records_requeue_test.go && git commit -m "postgres: lease reaper and operator requeue, both setting adopt_required"
+  cd "$(git rev-parse --show-toplevel)" && git add internal/store/postgres/records.go internal/store/postgres/records_requeue_test.go && git commit -m "postgres: lease reaper and operator requeue, both setting adopt_required"
   ```
 
 ---
@@ -6708,8 +6708,8 @@ func (s *RecordStore) Requeue(ctx context.Context, f store.RequeueFilter) (int64
 ## Task 12: List, Get and TxIDExists — the total order and the 404 seam
 
 **Files:**
-- Modify: `/Users/personal/git/demos/weather-chain/internal/store/postgres/records.go`
-- Create: `/Users/personal/git/demos/weather-chain/internal/store/postgres/records_read_test.go`
+- Modify: `internal/store/postgres/records.go`
+- Create: `internal/store/postgres/records_read_test.go`
 
 **Interfaces:**
 
@@ -6725,7 +6725,7 @@ func (s *RecordStore) TxIDExists(ctx context.Context, txID string) (bool, error)
 
 ### Steps
 
-- [ ] **Write the failing test.** Create `/Users/personal/git/demos/weather-chain/internal/store/postgres/records_read_test.go` with exactly this content:
+- [ ] **Write the failing test.** Create `internal/store/postgres/records_read_test.go` with exactly this content:
   ```go
   package postgres_test
 
@@ -7089,11 +7089,11 @@ func (s *RecordStore) TxIDExists(ctx context.Context, txID string) (bool, error)
 
 - [ ] **Run it and see it fail.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/... -count=1
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/... -count=1
   ```
   Expected failure text: `(*postgres.RecordStore)(nil).List undefined`, `(*postgres.RecordStore)(nil).Get undefined` and `(*postgres.RecordStore)(nil).TxIDExists undefined`.
 
-- [ ] **Write the implementation.** Append exactly this to `/Users/personal/git/demos/weather-chain/internal/store/postgres/records.go`:
+- [ ] **Write the implementation.** Append exactly this to `internal/store/postgres/records.go`:
   ```go
   // listRecordsSQL is the record list.
   //
@@ -7216,13 +7216,13 @@ func (s *RecordStore) TxIDExists(ctx context.Context, txID string) (bool, error)
 
 - [ ] **Run it and see it pass.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=1 -race -run 'TestList|TestGet|TestTxIDExists' -v
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=1 -race -run 'TestList|TestGet|TestTxIDExists' -v
   ```
   Expected output: `--- PASS` for `TestListIsATotalOrderAcrossATiedBatch`, `TestListFiltersByStationAndStatus`, `TestListOnAnEmptyTableAndPastTheEnd`, `TestGetRoundTripsEverySchemaField`, `TestGetUnknownIDIsErrNotFoundAndNeverAnError500`, `TestTxIDExistsIsTheProofGate`, `TestListAndGetSurviveAConcurrentWriter`, then `ok`.
 
 - [ ] **Reproduce the measured limit of the total-order test, exactly as Task 8 does for the claim.** Delete `, id DESC` from `listRecordsSQL`'s `ORDER BY` and comment out the `CREATE INDEX … ix_records_list` statement in `migrations.sql` (a `psql` DROP INDEX is useless here: `storetest.Fresh` re-applies the migration before every test). Then run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=3 -run TestListIsATotalOrderAcrossATiedBatch -v
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=3 -run TestListIsATotalOrderAcrossATiedBatch -v
   ```
   **Expected output: PASS, three times** — the measured result, recorded here so nobody has to guess. Twenty rows on an empty table are returned in insertion order whether the query says so or not, index or no index, so this test pins page continuity and the fixture's shape but does NOT gate the tiebreaker. Its doc comment says exactly that; confirm it still does. A run that FAILS (`position 0 = …, want …`) is a better outcome and should be written into the comment instead.
 
@@ -7230,19 +7230,19 @@ func (s *RecordStore) TxIDExists(ctx context.Context, txID string) (bool, error)
 
 - [ ] **Confirm the list uses its index.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && docker compose exec -T postgres psql -U postgres -d weatherproof_test -c "SET search_path TO wp_test_store; EXPLAIN SELECT id FROM weather_records WHERE (NULL::bigint IS NULL OR station_id = NULL) AND (NULL::text IS NULL OR status = NULL) ORDER BY created_at DESC, id DESC LIMIT 20 OFFSET 0;"
+  cd "$(git rev-parse --show-toplevel)" && docker compose exec -T postgres psql -U postgres -d weatherproof_test -c "SET search_path TO wp_test_store; EXPLAIN SELECT id FROM weather_records WHERE (NULL::bigint IS NULL OR station_id = NULL) AND (NULL::text IS NULL OR status = NULL) ORDER BY created_at DESC, id DESC LIMIT 20 OFFSET 0;"
   ```
   Expected output: a plan naming `ix_records_list`. At a tiny row count Postgres may legitimately choose a sequential scan and sort instead — that is fine and not a failure; the index earns its keep at production volume. What must NOT appear is any error, which would mean the statement text is wrong.
 
 - [ ] **Run the full gate.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/... -count=1 -race && gofmt -w ./internal && test -z "$(gofmt -l ./internal)" && go vet ./... && go build ./... && golangci-lint run --max-same-issues=0
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/... -count=1 -race && gofmt -w ./internal && test -z "$(gofmt -l ./internal)" && go vet ./... && go build ./... && golangci-lint run --max-same-issues=0
   ```
   All must pass with `0 issues`.
 
 - [ ] **Commit.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && git add internal/store/postgres/records.go internal/store/postgres/records_read_test.go && git commit -m "postgres: List with a total order, Get with ErrNotFound, and the txid proof gate"
+  cd "$(git rev-parse --show-toplevel)" && git add internal/store/postgres/records.go internal/store/postgres/records_read_test.go && git commit -m "postgres: List with a total order, Get with ErrNotFound, and the txid proof gate"
   ```
 
 ---
@@ -7250,8 +7250,8 @@ func (s *RecordStore) TxIDExists(ctx context.Context, txID string) (bool, error)
 ## Task 13: Stations — Upsert, Get, and the one-parsed-value search split
 
 **Files:**
-- Create: `/Users/personal/git/demos/weather-chain/internal/store/postgres/stations.go`
-- Create: `/Users/personal/git/demos/weather-chain/internal/store/postgres/stations_test.go`
+- Create: `internal/store/postgres/stations.go`
+- Create: `internal/store/postgres/stations_test.go`
 
 **Interfaces:**
 
@@ -7270,7 +7270,7 @@ func (s *StationStore) List(ctx context.Context, f store.StationFilter) ([]store
 
 ### Steps
 
-- [ ] **Write the failing test.** Create `/Users/personal/git/demos/weather-chain/internal/store/postgres/stations_test.go` with exactly this content:
+- [ ] **Write the failing test.** Create `internal/store/postgres/stations_test.go` with exactly this content:
   ```go
   package postgres_test
 
@@ -7622,11 +7622,11 @@ func (s *StationStore) List(ctx context.Context, f store.StationFilter) ([]store
 
 - [ ] **Run it and see it fail.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/... -count=1
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/... -count=1
   ```
   Expected failure text: `undefined: postgres.StationStore` and `undefined: postgres.NewStationStore`.
 
-- [ ] **Write the implementation.** Create `/Users/personal/git/demos/weather-chain/internal/store/postgres/stations.go` with exactly this content:
+- [ ] **Write the implementation.** Create `internal/store/postgres/stations.go` with exactly this content:
   ```go
   package postgres
 
@@ -7805,19 +7805,19 @@ func (s *StationStore) List(ctx context.Context, f store.StationFilter) ([]store
 
 - [ ] **Run it and see it pass.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=1 -race -run TestStation -v
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=1 -race -run TestStation -v
   ```
   Expected output: `--- PASS` for `TestStationUpsertInsertsThenUpdates`, `TestStationGetUnknownIsErrNotFound`, `TestStationListNoSearchIsAscendingByID`, `TestStationListNumericSearchIsAnExactLookup`, `TestStationListTextSearchRanksAndFallsBackToID`, `TestStationSearchNeverErrorsOnAdversarialInput`, `TestStationListReflectsLastReadingForOnlineDerivation`, then `ok`.
 
 - [ ] **Run the full gate.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/... -count=1 -race && gofmt -w ./internal && test -z "$(gofmt -l ./internal)" && go vet ./... && go build ./... && golangci-lint run --max-same-issues=0
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/... -count=1 -race && gofmt -w ./internal && test -z "$(gofmt -l ./internal)" && go vet ./... && go build ./... && golangci-lint run --max-same-issues=0
   ```
   All must pass with `0 issues`.
 
 - [ ] **Commit.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && git add internal/store/postgres/stations.go internal/store/postgres/stations_test.go && git commit -m "postgres: stations upsert/get/list with the one-parsed-value search split"
+  cd "$(git rev-parse --show-toplevel)" && git add internal/store/postgres/stations.go internal/store/postgres/stations_test.go && git commit -m "postgres: stations upsert/get/list with the one-parsed-value search split"
   ```
 
 ---
@@ -7825,9 +7825,9 @@ func (s *StationStore) List(ctx context.Context, f store.StationFilter) ([]store
 ## Task 14: Stats and Snapshot
 
 **Files:**
-- Modify: `/Users/personal/git/demos/weather-chain/internal/store/postgres/stations.go`
-- Modify: `/Users/personal/git/demos/weather-chain/internal/store/postgres/records.go`
-- Create: `/Users/personal/git/demos/weather-chain/internal/store/postgres/stats_test.go`
+- Modify: `internal/store/postgres/stations.go`
+- Modify: `internal/store/postgres/records.go`
+- Create: `internal/store/postgres/stats_test.go`
 
 **Interfaces:**
 
@@ -7843,7 +7843,7 @@ func (s *RecordStore) Snapshot(ctx context.Context) (store.Snapshot, error)
 
 ### Steps
 
-- [ ] **Write the failing test.** Create `/Users/personal/git/demos/weather-chain/internal/store/postgres/stats_test.go` with exactly this content:
+- [ ] **Write the failing test.** Create `internal/store/postgres/stats_test.go` with exactly this content:
   ```go
   package postgres_test
 
@@ -8051,11 +8051,11 @@ func (s *RecordStore) Snapshot(ctx context.Context) (store.Snapshot, error)
 
 - [ ] **Run it and see it fail.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/... -count=1
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/... -count=1
   ```
   Expected failure text: `(*postgres.StationStore)(nil).Stats undefined` and `(*postgres.RecordStore)(nil).Snapshot undefined`.
 
-- [ ] **Add Stats to the station store.** Append exactly this to `/Users/personal/git/demos/weather-chain/internal/store/postgres/stations.go`:
+- [ ] **Add Stats to the station store.** Append exactly this to `internal/store/postgres/stations.go`:
   ```go
   // Stats implements store.StationStore.
   //
@@ -8067,7 +8067,7 @@ func (s *RecordStore) Snapshot(ctx context.Context) (store.Snapshot, error)
   }
   ```
 
-- [ ] **Add Snapshot to the record store.** Append exactly this to `/Users/personal/git/demos/weather-chain/internal/store/postgres/records.go`:
+- [ ] **Add Snapshot to the record store.** Append exactly this to `internal/store/postgres/records.go`:
   ```go
   // snapshotSQL is the row-count half of the operational heartbeat, in one query.
   //
@@ -8103,19 +8103,19 @@ func (s *RecordStore) Snapshot(ctx context.Context) (store.Snapshot, error)
 
 - [ ] **Run it and see it pass.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=1 -race -run 'TestStats|TestSnapshot' -v
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=1 -race -run 'TestStats|TestSnapshot' -v
   ```
   Expected output: `--- PASS` for `TestStatsActiveStationsIsALiveCount`, `TestStatsOnAnEmptyDatabase`, `TestStatsAfterPublishing`, `TestSnapshotCountsEveryBucket`, `TestSnapshotOnAnEmptyDatabaseIsAllZero`, then `ok`.
 
 - [ ] **Run the full gate.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/... -count=1 -race && gofmt -w ./internal && test -z "$(gofmt -l ./internal)" && go vet ./... && go build ./... && golangci-lint run --max-same-issues=0
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/... -count=1 -race && gofmt -w ./internal && test -z "$(gofmt -l ./internal)" && go vet ./... && go build ./... && golangci-lint run --max-same-issues=0
   ```
   All must pass with `0 issues`.
 
 - [ ] **Commit.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && git add internal/store/postgres/stations.go internal/store/postgres/records.go internal/store/postgres/stats_test.go && git commit -m "postgres: live activeStations Stats and the six-bucket Snapshot"
+  cd "$(git rev-parse --show-toplevel)" && git add internal/store/postgres/stations.go internal/store/postgres/records.go internal/store/postgres/stats_test.go && git commit -m "postgres: live activeStations Stats and the six-bucket Snapshot"
   ```
 
 ---
@@ -8123,8 +8123,8 @@ func (s *RecordStore) Snapshot(ctx context.Context) (store.Snapshot, error)
 ## Task 15: SetBlockHeights and ReconcileCandidates
 
 **Files:**
-- Modify: `/Users/personal/git/demos/weather-chain/internal/store/postgres/records.go`
-- Create: `/Users/personal/git/demos/weather-chain/internal/store/postgres/records_chain_test.go`
+- Modify: `internal/store/postgres/records.go`
+- Create: `internal/store/postgres/records_chain_test.go`
 
 **Interfaces:**
 
@@ -8139,7 +8139,7 @@ func (s *RecordStore) ReconcileCandidates(ctx context.Context, olderThan time.Du
 
 ### Steps
 
-- [ ] **Write the failing test.** Create `/Users/personal/git/demos/weather-chain/internal/store/postgres/records_chain_test.go` with exactly this content:
+- [ ] **Write the failing test.** Create `internal/store/postgres/records_chain_test.go` with exactly this content:
   ```go
   package postgres_test
 
@@ -8465,11 +8465,11 @@ func (s *RecordStore) ReconcileCandidates(ctx context.Context, olderThan time.Du
 
 - [ ] **Run it and see it fail.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/... -count=1
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/... -count=1
   ```
   Expected failure text: `(*postgres.RecordStore)(nil).SetBlockHeights undefined` and `(*postgres.RecordStore)(nil).ReconcileCandidates undefined`.
 
-- [ ] **Write the implementation.** Append exactly this to `/Users/personal/git/demos/weather-chain/internal/store/postgres/records.go`:
+- [ ] **Write the implementation.** Append exactly this to `internal/store/postgres/records.go`:
   ```go
   // setBlockHeightSQL refreshes the mined height of every record sharing a txid.
   //
@@ -8561,19 +8561,19 @@ func (s *RecordStore) ReconcileCandidates(ctx context.Context, olderThan time.Du
 
 - [ ] **Run it and see it pass.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=1 -race -run 'TestSetBlockHeights|TestReconcile' -v
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=1 -race -run 'TestSetBlockHeights|TestReconcile' -v
   ```
   Expected output: `--- PASS` for `TestSetBlockHeightsWritesBothTablesInOneTransaction`, `TestSetBlockHeightsNeverLowersAStationHeight`, `TestSetBlockHeightsNoOpsForAnUnknownTxID`, `TestSetBlockHeightsOnlyTouchesCompletedRows`, `TestReconcileCandidatesSelectsOnlyUnminedCompletedRows`, `TestReconcileCandidatesOnAnEmptyDatabase`, then `ok`.
 
 - [ ] **Run the full gate.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/... -count=1 -race && gofmt -w ./internal && test -z "$(gofmt -l ./internal)" && go vet ./... && go build ./... && golangci-lint run --max-same-issues=0
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/... -count=1 -race && gofmt -w ./internal && test -z "$(gofmt -l ./internal)" && go vet ./... && go build ./... && golangci-lint run --max-same-issues=0
   ```
   All must pass with `0 issues`.
 
 - [ ] **Commit.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && git add internal/store/postgres/records.go internal/store/postgres/records_chain_test.go && git commit -m "postgres: block-height persistence in one transaction, and reconcile candidates"
+  cd "$(git rev-parse --show-toplevel)" && git add internal/store/postgres/records.go internal/store/postgres/records_chain_test.go && git commit -m "postgres: block-height persistence in one transaction, and reconcile candidates"
   ```
 
 ---
@@ -8581,8 +8581,8 @@ func (s *RecordStore) ReconcileCandidates(ctx context.Context, olderThan time.Du
 ## Task 16: Deposits and Preflight
 
 **Files:**
-- Create: `/Users/personal/git/demos/weather-chain/internal/store/postgres/deposits.go`
-- Create: `/Users/personal/git/demos/weather-chain/internal/store/postgres/deposits_test.go`
+- Create: `internal/store/postgres/deposits.go`
+- Create: `internal/store/postgres/deposits_test.go`
 
 **Interfaces:**
 
@@ -8606,7 +8606,7 @@ func (s *PreflightStore) RecordPreflight(ctx context.Context, fingerprint string
 
 ### Steps
 
-- [ ] **Write the failing test.** Create `/Users/personal/git/demos/weather-chain/internal/store/postgres/deposits_test.go` with exactly this content:
+- [ ] **Write the failing test.** Create `internal/store/postgres/deposits_test.go` with exactly this content:
   ```go
   package postgres_test
 
@@ -8796,11 +8796,11 @@ func (s *PreflightStore) RecordPreflight(ctx context.Context, fingerprint string
 
 - [ ] **Run it and see it fail.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/... -count=1
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/... -count=1
   ```
   Expected failure text: `undefined: postgres.DepositStore` and `undefined: postgres.PreflightStore`.
 
-- [ ] **Write the implementation.** Create `/Users/personal/git/demos/weather-chain/internal/store/postgres/deposits.go` with exactly this content:
+- [ ] **Write the implementation.** Create `internal/store/postgres/deposits.go` with exactly this content:
   ```go
   package postgres
 
@@ -8933,19 +8933,19 @@ func (s *PreflightStore) RecordPreflight(ctx context.Context, fingerprint string
 
 - [ ] **Run it and see it pass.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=1 -race -run 'TestDeposit|TestDuplicateDeposit|TestMarkInternalized|TestPendingDeposits|TestPreflight' -v
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=1 -race -run 'TestDeposit|TestDuplicateDeposit|TestMarkInternalized|TestPendingDeposits|TestPreflight' -v
   ```
   Expected output: `--- PASS` for `TestDepositLifecycle`, `TestDuplicateDepositSuffixIsErrConflict`, `TestMarkInternalizedUnknownSuffixIsErrNotFound`, `TestPendingDepositsOnAnEmptyTable`, `TestPreflightRoundTrip`, then `ok`.
 
 - [ ] **Run the full gate.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/... -count=1 -race && gofmt -w ./internal && test -z "$(gofmt -l ./internal)" && go vet ./... && go build ./... && golangci-lint run --max-same-issues=0
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/... -count=1 -race && gofmt -w ./internal && test -z "$(gofmt -l ./internal)" && go vet ./... && go build ./... && golangci-lint run --max-same-issues=0
   ```
   All must pass with `0 issues`.
 
 - [ ] **Commit.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && git add internal/store/postgres/deposits.go internal/store/postgres/deposits_test.go && git commit -m "postgres: operator deposits and the preflight fingerprint cache"
+  cd "$(git rev-parse --show-toplevel)" && git add internal/store/postgres/deposits.go internal/store/postgres/deposits_test.go && git commit -m "postgres: operator deposits and the preflight fingerprint cache"
   ```
 
 ---
@@ -8953,9 +8953,9 @@ func (s *PreflightStore) RecordPreflight(ctx context.Context, fingerprint string
 ## Task 17: The store-layer security gate and the interface-satisfaction proof
 
 **Files:**
-- Create: `/Users/personal/git/demos/weather-chain/internal/store/postgres/postgres.go`
-- Create: `/Users/personal/git/demos/weather-chain/internal/store/postgres/sqldiscipline_test.go`
-- Create: `/Users/personal/git/demos/weather-chain/internal/store/postgres/security_test.go`
+- Create: `internal/store/postgres/postgres.go`
+- Create: `internal/store/postgres/sqldiscipline_test.go`
+- Create: `internal/store/postgres/security_test.go`
 
 **Interfaces:**
 
@@ -8970,7 +8970,7 @@ func New(pool *pgxpool.Pool) store.Store
 
 ### Steps
 
-- [ ] **Write the failing tests.** Create `/Users/personal/git/demos/weather-chain/internal/store/postgres/sqldiscipline_test.go` with exactly this content. Note that this file is an INTERNAL test (`package postgres`, not `postgres_test`) because it inspects the package's own source and does not touch a database, and because it must not import `storetest` — `storetest` imports this package, so an in-package test importing it would be a cycle.
+- [ ] **Write the failing tests.** Create `internal/store/postgres/sqldiscipline_test.go` with exactly this content. Note that this file is an INTERNAL test (`package postgres`, not `postgres_test`) because it inspects the package's own source and does not touch a database, and because it must not import `storetest` — `storetest` imports this package, so an in-package test importing it would be a cycle.
   ```go
   package postgres
 
@@ -9258,7 +9258,7 @@ func New(pool *pgxpool.Pool) store.Store
   }
   ```
 
-- [ ] **Also write the database-backed security test.** Create `/Users/personal/git/demos/weather-chain/internal/store/postgres/security_test.go` with exactly this content:
+- [ ] **Also write the database-backed security test.** Create `internal/store/postgres/security_test.go` with exactly this content:
   ```go
   package postgres_test
 
@@ -9591,11 +9591,11 @@ func New(pool *pgxpool.Pool) store.Store
 
 - [ ] **Run it and see it fail.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/... -count=1
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/... -count=1
   ```
   Expected failure text: `undefined: AllQueries` (from the internal test) and `undefined: postgres.New` plus `undefined: postgres.AllQueries` (from the external test).
 
-- [ ] **Write the assembly point.** Create `/Users/personal/git/demos/weather-chain/internal/store/postgres/postgres.go` with exactly this content:
+- [ ] **Write the assembly point.** Create `internal/store/postgres/postgres.go` with exactly this content:
   ```go
   package postgres
 
@@ -9686,11 +9686,11 @@ func New(pool *pgxpool.Pool) store.Store
 
 - [ ] **Run it and see it pass.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=1 -race -run 'TestEvery|TestNo|TestSimpleProtocol|TestAllQueries|TestMigrationsScript|TestNew|TestAdversarial' -v
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=1 -race -run 'TestEvery|TestNo|TestSimpleProtocol|TestAllQueries|TestMigrationsScript|TestNew|TestAdversarial' -v
   ```
   Expected output: `--- PASS` for `TestEveryQueryTakesAConstantStatement`, `TestNoSprintfInThePackage`, `TestSimpleProtocolAppearsOnlyWhereItIsRejected`, `TestNoStarSelects`, `TestAllQueriesIsComplete`, `TestMigrationsScriptAvoidsUnavailableFeatures`, `TestNewWiresEveryMember`, `TestEveryStatementPreparesAgainstARealServer`, `TestNoDriverErrorEscapesTheStore`, `TestUnauthenticatedVerifyPathCannotTouchNonCompletedRows`, `TestSimpleProtocolIsRejectedWithARealDSN`, `TestAdversarialInputReachesNoSQLText`, then `ok`.
 
-- [ ] **Prove the discipline test actually discriminates.** Temporarily add a rogue statement to `/Users/personal/git/demos/weather-chain/internal/store/postgres/records.go`:
+- [ ] **Prove the discipline test actually discriminates.** Temporarily add a rogue statement to `internal/store/postgres/records.go`:
   ```go
   // TEMPORARY: proving the guard has teeth. Delete after observing the failure.
   func (s *RecordStore) rogue(ctx context.Context, order string) error {
@@ -9700,7 +9700,7 @@ func New(pool *pgxpool.Pool) store.Store
   ```
   then run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && golangci-lint run --max-same-issues=0 ./internal/store/... ; WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=1 -run TestEveryQueryTakesAConstantStatement -v
+  cd "$(git rev-parse --show-toplevel)" && golangci-lint run --max-same-issues=0 ./internal/store/... ; WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=1 -run TestEveryQueryTakesAConstantStatement -v
   ```
   Expected: golangci-lint reports the function as unused but NOT as a SQL problem — that is the measured gosec gap, and seeing it matters. Then the test FAILS with `records.go: query called with "\"SELECT id FROM weather_records ORDER BY \"+order"; the statement must be an identifier ending in SQL`. **Delete the `rogue` method before proceeding**, and re-run the test to see it pass again.
 
@@ -9710,53 +9710,53 @@ func New(pool *pgxpool.Pool) store.Store
   ```
   then run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=1 -run 'TestMigrationsScriptAvoidsUnavailableFeatures|TestMigrateIsIdempotent' -v
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=1 -run 'TestMigrationsScriptAvoidsUnavailableFeatures|TestMigrateIsIdempotent' -v
   ```
   Expected: `--- FAIL: TestMigrationsScriptAvoidsUnavailableFeatures` with `the migration references uuidv7(), which is a PostgreSQL 18 builtin`, AND `--- FAIL: TestMigrateIsIdempotent` with SQLSTATE 42883 — which is the point of the guard: on the pinned 17-alpine image that migration does not merely lint badly, it cannot be applied at all. **Revert `migrations.sql` before proceeding** and re-run both to see them pass.
 
-- [ ] **Prove the completeness test discriminates.** Temporarily add to `/Users/personal/git/demos/weather-chain/internal/store/postgres/records.go`:
+- [ ] **Prove the completeness test discriminates.** Temporarily add to `internal/store/postgres/records.go`:
   ```go
   // TEMPORARY: proving the completeness guard has teeth. Delete after observing.
   const unregisteredSQL = `SELECT 1`
   ```
   then run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=1 -run TestAllQueriesIsComplete -v
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=1 -run TestAllQueriesIsComplete -v
   ```
   Expected failure text: `const unregisteredSQL is not registered in AllQueries() under the key "unregistered"`. **Delete the constant before proceeding**, and re-run to see it pass.
 
 - [ ] **Run the entire suite the way CI will.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test -race -count=1 -timeout 10m ./internal/store/... && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test -race -count=5 -timeout 10m -run 'TestClaimPendingNeverDoubleClaims' ./internal/store/postgres/
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test -race -count=1 -timeout 10m ./internal/store/... && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test -race -count=5 -timeout 10m -run 'TestClaimPendingNeverDoubleClaims' ./internal/store/postgres/
   ```
   Expected output: `ok` for `internal/store`, `internal/store/fake`, `internal/store/postgres` and `internal/store/storetest`, then a second `ok` for the repeated claim race. No SKIPs anywhere.
 
 - [ ] **Run the `check` job's steps in full.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && go mod tidy && git diff --exit-code go.mod go.sum && go vet ./... && go build ./... && go test ./... -count=1 && go list -f '{{if and (eq (len .TestGoFiles) 0) (eq (len .XTestGoFiles) 0)}}{{.ImportPath}}{{end}}' ./... && golangci-lint run --max-same-issues=0 && go test ./internal/weather -run TestGolden -update -count=1 && git diff --exit-code internal/weather/testdata/golden/
+  cd "$(git rev-parse --show-toplevel)" && go mod tidy && git diff --exit-code go.mod go.sum && go vet ./... && go build ./... && go test ./... -count=1 && go list -f '{{if and (eq (len .TestGoFiles) 0) (eq (len .XTestGoFiles) 0)}}{{.ImportPath}}{{end}}' ./... && golangci-lint run --max-same-issues=0 && go test ./internal/weather -run TestGolden -update -count=1 && git diff --exit-code internal/weather/testdata/golden/
   ```
   Expected: no output from either `git diff`, no output from `go list`, `0 issues` from the linter, and `ok` lines throughout. The final `git diff` proves Plan A's golden gate is untouched.
 
 - [ ] **Confirm no test depends on ordering.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=1 -shuffle=on -race -v 2>&1 | tail -20
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/postgres/ -count=1 -shuffle=on -race -v 2>&1 | tail -20
   ```
   Expected output: a `-test.shuffle <seed>` line and `ok`. Run it three times; every seed must pass. Any failure here means a test is reading state a sibling left behind, and `storetest.Fresh` is not being called at the top of it.
 
 - [ ] **Confirm the tripwire still fires now the suite is large.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/... -count=1 2>&1 | tail -20
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/... -count=1 2>&1 | tail -20
   ```
   Expected output: `FAIL` for `internal/store/postgres` and `internal/store/storetest` with `WEATHER_TEST_POSTGRES_DSN is unset while WEATHER_TEST_REQUIRE_POSTGRES is set: the Postgres suite must never skip in CI`. `internal/store` and `internal/store/fake` still pass, because they need no database.
 
 - [ ] **Commit.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && git add internal/store/postgres/postgres.go internal/store/postgres/sqldiscipline_test.go internal/store/postgres/security_test.go && git commit -m "postgres: SQL-discipline gate, PREPARE-every-statement proof, and interface conformance"
+  cd "$(git rev-parse --show-toplevel)" && git add internal/store/postgres/postgres.go internal/store/postgres/sqldiscipline_test.go internal/store/postgres/security_test.go && git commit -m "postgres: SQL-discipline gate, PREPARE-every-statement proof, and interface conformance"
   ```
 
 - [ ] **Stop the local Postgres.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && make pg-down && docker rm -f wp-pg
+  cd "$(git rev-parse --show-toplevel)" && make pg-down && docker rm -f wp-pg
   ```
   Expected output: the compose service stops, and `wp-pg` is removed if the standalone container from Task 4 is still running (an error saying "No such container" is fine).
 
@@ -9765,7 +9765,7 @@ func New(pool *pgxpool.Pool) store.Store
 ## Task 18: CI hardening — govulncheck and pinned action SHAs
 
 **Files:**
-- Modify: `/Users/personal/git/demos/weather-chain/.github/workflows/go.yml`
+- Modify: `.github/workflows/go.yml`
 
 **Interfaces:**
 
@@ -9779,11 +9779,11 @@ This is a separate task from Task 5 on purpose. A reviewer can reasonably approv
 
 - [ ] **Check the current dependency set for known vulnerabilities BEFORE wiring the gate**, so a red build is diagnosed rather than discovered. Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+  cd "$(git rev-parse --show-toplevel)" && go run golang.org/x/vuln/cmd/govulncheck@latest ./...
   ```
   Expected output: `No vulnerabilities found.` If it reports a finding, stop and resolve it (usually `go get <module>@<fixed version>` followed by `go mod tidy`) before adding the CI step — a gate that is red on the day it lands teaches everyone to ignore it.
 
-- [ ] **Add the govulncheck step to the `check` job.** In `/Users/personal/git/demos/weather-chain/.github/workflows/go.yml`, immediately AFTER the `- name: Lint` step and BEFORE the `- name: Golden file is not stale or laundered` step, insert exactly:
+- [ ] **Add the govulncheck step to the `check` job.** In `.github/workflows/go.yml`, immediately AFTER the `- name: Lint` step and BEFORE the `- name: Golden file is not stale or laundered` step, insert exactly:
   ```yaml
       # CodeQL does not flag dependency CVEs at all, so this step is not
       # redundant with code scanning even once `go` is added to it (the next step
@@ -9797,7 +9797,7 @@ This is a separate task from Task 5 on purpose. A reviewer can reasonably approv
 
 - [ ] **Verify the workflow still parses and the step landed in the right place.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && python3 -c "
+  cd "$(git rev-parse --show-toplevel)" && python3 -c "
   import yaml
   d = yaml.safe_load(open('.github/workflows/go.yml'))
   names = [s.get('name') for s in d['jobs']['check']['steps']]
@@ -9811,11 +9811,11 @@ This is a separate task from Task 5 on purpose. A reviewer can reasonably approv
 
 - [ ] **Resolve the three action tags to 40-character SHAs.** Floating major tags are mutable: `actions/checkout@v4` is whatever the `v4` tag currently points at, so a compromised or simply changed release runs in a job that has repository read access. Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && for spec in actions/checkout:v4 actions/setup-go:v5 golangci/golangci-lint-action:v7; do repo="${spec%%:*}"; tag="${spec##*:}"; sha=$(gh api "repos/$repo/commits/$tag" --jq .sha); ver=$(gh api "repos/$repo/releases/latest" --jq .tag_name); echo "$repo  $sha  # $ver"; done
+  cd "$(git rev-parse --show-toplevel)" && for spec in actions/checkout:v4 actions/setup-go:v5 golangci/golangci-lint-action:v7; do repo="${spec%%:*}"; tag="${spec##*:}"; sha=$(gh api "repos/$repo/commits/$tag" --jq .sha); ver=$(gh api "repos/$repo/releases/latest" --jq .tag_name); echo "$repo  $sha  # $ver"; done
   ```
   Expected output: three lines, each a `owner/repo`, a 40-character hex SHA, and a `# vX.Y.Z` comment. Record all three.
 
-- [ ] **Pin the actions.** In `/Users/personal/git/demos/weather-chain/.github/workflows/go.yml`, replace each `uses:` line with the resolved digest plus the version as a trailing comment, in BOTH jobs. The `check` job's `Checkout code` and `Set up Go` steps and its `Lint` step, and the `integration` job's `Checkout code` and `Set up Go` steps. The shape is exactly:
+- [ ] **Pin the actions.** In `.github/workflows/go.yml`, replace each `uses:` line with the resolved digest plus the version as a trailing comment, in BOTH jobs. The `check` job's `Checkout code` and `Set up Go` steps and its `Lint` step, and the `integration` job's `Checkout code` and `Set up Go` steps. The shape is exactly:
   ```yaml
         - name: Checkout code
           uses: actions/checkout@<40-char sha from the previous step>  # v4.2.2
@@ -9834,13 +9834,13 @@ This is a separate task from Task 5 on purpose. A reviewer can reasonably approv
 
 - [ ] **Verify every `uses:` is now pinned.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && grep -n 'uses:' .github/workflows/go.yml && echo "--- unpinned (must be empty) ---" && grep -n 'uses:.*@v[0-9]' .github/workflows/go.yml
+  cd "$(git rev-parse --show-toplevel)" && grep -n 'uses:' .github/workflows/go.yml && echo "--- unpinned (must be empty) ---" && grep -n 'uses:.*@v[0-9]' .github/workflows/go.yml
   ```
   Expected output: five `uses:` lines each with a 40-character SHA and a trailing `# vX.Y.Z`, then the header, then NOTHING under it. Any line printed under the header is still on a floating tag.
 
 - [ ] **Confirm the top-level permissions block is untouched.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && python3 -c "
+  cd "$(git rev-parse --show-toplevel)" && python3 -c "
   import yaml
   d = yaml.safe_load(open('.github/workflows/go.yml'))
   print('top-level:', d.get('permissions'))
@@ -9852,16 +9852,16 @@ This is a separate task from Task 5 on purpose. A reviewer can reasonably approv
 
 - [ ] **Add `go` to CodeQL, because right now the backend language is scanned by nothing.** This is the control the repository has TODAY for its TypeScript and would silently lose the moment the backend becomes Go — it is the control whose alerts commit `5cfea93` existed to close. Confirm the gap first:
   ```
-  cd /Users/personal/git/demos/weather-chain && gh api repos/bsv-blockchain-demos/weather-proof/code-scanning/default-setup
+  cd "$(git rev-parse --show-toplevel)" && gh api repos/bsv-blockchain-demos/weather-proof/code-scanning/default-setup
   ```
   Expected output (verified live on 2026-07-29, alongside `query_suite`, `threat_model`, `schedule` and the runner fields): `"state":"configured"` with `"languages":["actions","javascript","javascript-typescript","typescript"]` — note the absence of `go`. Then add it, keeping every language already there:
   ```
-  cd /Users/personal/git/demos/weather-chain && gh api --method PATCH repos/bsv-blockchain-demos/weather-proof/code-scanning/default-setup -f 'languages[]=actions' -f 'languages[]=go' -f 'languages[]=javascript-typescript' -f 'languages[]=typescript'
+  cd "$(git rev-parse --show-toplevel)" && gh api --method PATCH repos/bsv-blockchain-demos/weather-proof/code-scanning/default-setup -f 'languages[]=actions' -f 'languages[]=go' -f 'languages[]=javascript-typescript' -f 'languages[]=typescript'
   ```
 
 - [ ] **Verify `go` is actually configured, rather than assuming the PATCH took.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && gh api repos/bsv-blockchain-demos/weather-proof/code-scanning/default-setup --jq '.state, .languages' && gh api repos/bsv-blockchain-demos/weather-proof/code-scanning/default-setup --jq '.languages | index("go") // empty' | grep -q . && echo "go is configured"
+  cd "$(git rev-parse --show-toplevel)" && gh api repos/bsv-blockchain-demos/weather-proof/code-scanning/default-setup --jq '.state, .languages' && gh api repos/bsv-blockchain-demos/weather-proof/code-scanning/default-setup --jq '.languages | index("go") // empty' | grep -q . && echo "go is configured"
   ```
   Expected output: `configured`, the language list including `go`, then `go is configured`.
 
@@ -9869,13 +9869,13 @@ This is a separate task from Task 5 on purpose. A reviewer can reasonably approv
 
 - [ ] **Run the full local gate.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && gofmt -w ./internal && test -z "$(gofmt -l ./internal)" && go vet ./... && go build ./... && go test ./... -count=1 && golangci-lint run --max-same-issues=0 && go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+  cd "$(git rev-parse --show-toplevel)" && gofmt -w ./internal && test -z "$(gofmt -l ./internal)" && go vet ./... && go build ./... && go test ./... -count=1 && golangci-lint run --max-same-issues=0 && go run golang.org/x/vuln/cmd/govulncheck@latest ./...
   ```
   All must pass, ending with `No vulnerabilities found.`
 
 - [ ] **Commit.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && git add .github/workflows/go.yml && git commit -m "ci: govulncheck gate, digest-pinned actions, CodeQL go language"
+  cd "$(git rev-parse --show-toplevel)" && git add .github/workflows/go.yml && git commit -m "ci: govulncheck gate, digest-pinned actions, CodeQL go language"
   ```
 
 ---
@@ -9883,9 +9883,9 @@ This is a separate task from Task 5 on purpose. A reviewer can reasonably approv
 ## Task 19: One conformance suite, run against both implementations
 
 **Files:**
-- Create: `/Users/personal/git/demos/weather-chain/internal/store/storetest/conformance.go`
-- Create: `/Users/personal/git/demos/weather-chain/internal/store/fake/conformance_test.go`
-- Create: `/Users/personal/git/demos/weather-chain/internal/store/postgres/conformance_test.go`
+- Create: `internal/store/storetest/conformance.go`
+- Create: `internal/store/fake/conformance_test.go`
+- Create: `internal/store/postgres/conformance_test.go`
 
 **Why this task exists.** B2's ENTIRE HTTP test suite runs against `internal/store/fake`. That is the right design — it is what keeps twenty-odd handler tasks off a service container — but it has a failure mode with no natural detector: every place the fake and the SQL disagree, a B2 test passes while proving nothing about production. Four such divergences were found by reading the two implementations side by side, and none of them was covered by any test: the fake ignored `StationFilter.Search` completely while `StationStore.List` has three branches; the fake advanced `last_temp` only for a newer reading while `bumpStationsSQL` assigned it unconditionally; the fake CREATED a missing station row while `bumpStationsSQL` matches nothing; and the fake never reported `ErrConflict` for a duplicate id while Postgres does. Tasks 2, 9 and 13 fix all four. This task is the mechanism that keeps them fixed, and it is the only one available: a shared table of assertions, run twice.
 
@@ -9903,7 +9903,7 @@ func RunStoreConformance(t *testing.T, name string, mk func(t *testing.T) store.
 
 ### Steps
 
-- [ ] **Write the failing callers first**, so the suite is written against two real callers rather than one. Create `/Users/personal/git/demos/weather-chain/internal/store/fake/conformance_test.go` with exactly this content:
+- [ ] **Write the failing callers first**, so the suite is written against two real callers rather than one. Create `internal/store/fake/conformance_test.go` with exactly this content:
   ```go
   package fake_test
 
@@ -9925,7 +9925,7 @@ func RunStoreConformance(t *testing.T, name string, mk func(t *testing.T) store.
   	})
   }
   ```
-  and `/Users/personal/git/demos/weather-chain/internal/store/postgres/conformance_test.go` with exactly this content:
+  and `internal/store/postgres/conformance_test.go` with exactly this content:
   ```go
   package postgres_test
 
@@ -9949,11 +9949,11 @@ func RunStoreConformance(t *testing.T, name string, mk func(t *testing.T) store.
 
 - [ ] **Run it and see it fail.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && go test ./internal/store/... -count=1
+  cd "$(git rev-parse --show-toplevel)" && go test ./internal/store/... -count=1
   ```
   Expected failure text: `undefined: storetest.RunStoreConformance` in both `internal/store/fake` and `internal/store/postgres`.
 
-- [ ] **Write the suite.** Create `/Users/personal/git/demos/weather-chain/internal/store/storetest/conformance.go` with exactly this content:
+- [ ] **Write the suite.** Create `internal/store/storetest/conformance.go` with exactly this content:
   ```go
   package storetest
 
@@ -10264,25 +10264,25 @@ func RunStoreConformance(t *testing.T, name string, mk func(t *testing.T) store.
 
 - [ ] **Run it and see BOTH halves pass.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/... -count=1 -run Conforms -v
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/... -count=1 -run Conforms -v
   ```
   Expected output: `--- PASS: TestFakeConformsToTheStoreContract` and `--- PASS: TestPostgresConformsToTheStoreContract`, each with the eight named subtests under it, then `ok` for both packages. Every subtest name appears twice in the log — once with the `fake/` prefix and once with `postgres/` — which is the whole point.
 
 - [ ] **Prove the suite actually catches a divergence.** Temporarily make the fake wrong in the way it was wrong before Task 2 fixed it: in `internal/store/fake/fake.go`, change `stationMatches` to `return true` unconditionally. Then run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && go test ./internal/store/fake/ -count=1 -run Conforms -v
+  cd "$(git rev-parse --show-toplevel)" && go test ./internal/store/fake/ -count=1 -run Conforms -v
   ```
   Expected failure text: `List(search="1001") total = 3, want 1 (an all-digits search is an EXACT station_id lookup)` plus the same for `bristol`, `kelvin` and the NUL case. **Revert `stationMatches` before proceeding** and re-run to see it pass. A conformance suite nobody has seen fail is decoration.
 
 - [ ] **Run the full gate.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/... -count=1 -race && gofmt -w ./internal && test -z "$(gofmt -l ./internal)" && go vet ./... && go build ./... && golangci-lint run --max-same-issues=0
+  cd "$(git rev-parse --show-toplevel)" && WEATHER_TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/weatherproof_test?sslmode=disable' WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/... -count=1 -race && gofmt -w ./internal && test -z "$(gofmt -l ./internal)" && go vet ./... && go build ./... && golangci-lint run --max-same-issues=0
   ```
   All must pass with `0 issues`.
 
 - [ ] **Commit.** Run exactly:
   ```
-  cd /Users/personal/git/demos/weather-chain && git add internal/store/storetest/conformance.go internal/store/fake/conformance_test.go internal/store/postgres/conformance_test.go && git commit -m "storetest: one conformance suite, run against the fake and Postgres"
+  cd "$(git rev-parse --show-toplevel)" && git add internal/store/storetest/conformance.go internal/store/fake/conformance_test.go internal/store/postgres/conformance_test.go && git commit -m "storetest: one conformance suite, run against the fake and Postgres"
   ```
 
 ---

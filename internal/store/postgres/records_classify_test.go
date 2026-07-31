@@ -205,6 +205,13 @@ type excludedSnapshot struct {
 	errText  string
 	hasLease bool
 	hasRef   bool
+
+	// hasProcessed is here because failPermanentSQL sets `processed_at = now()`.
+	// readRowState has always read the column, but this snapshot dropped it, so a
+	// dropped-id-filter mutation that stamped processed_at on the EXCLUDED row
+	// moved a column these three tests exist to prove did not move — and
+	// `before != after` stayed false for it.
+	hasProcessed bool
 }
 
 // snapshotExcluded reads id's full state and immediately dereferences the
@@ -215,11 +222,12 @@ func snapshotExcluded(t testing.TB, pool *pgxpool.Pool, id string) excludedSnaps
 	t.Helper()
 	st := readRowState(t, pool, id)
 	snap := excludedSnapshot{
-		status:   st.status,
-		attempts: st.attempts,
-		adopt:    st.adoptRequired,
-		hasLease: st.hasLease,
-		hasRef:   st.hasRef,
+		status:       st.status,
+		attempts:     st.attempts,
+		adopt:        st.adoptRequired,
+		hasLease:     st.hasLease,
+		hasProcessed: st.hasProcessed,
+		hasRef:       st.hasRef,
 	}
 	if st.errText != nil {
 		snap.hasError = true

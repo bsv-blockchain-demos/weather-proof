@@ -28,23 +28,13 @@ func handleWeatherList(recs store.RecordStore) http.HandlerFunc {
 
 		status, statusErr := parseStatus(q)
 		if statusErr != nil {
-			var badReq badRequestError
-			if errors.As(statusErr, &badReq) {
-				writeError(w, r, http.StatusBadRequest, badReq.Error())
-				return
-			}
-			writeErrorCause(w, r, http.StatusInternalServerError, msgInternal, statusErr)
+			writeParamError(w, r, statusErr)
 			return
 		}
 
 		stationID, stationErr := parseStationID(q)
 		if stationErr != nil {
-			var badReq badRequestError
-			if errors.As(stationErr, &badReq) {
-				writeError(w, r, http.StatusBadRequest, badReq.Error())
-				return
-			}
-			writeErrorCause(w, r, http.StatusInternalServerError, msgInternal, stationErr)
+			writeParamError(w, r, stationErr)
 			return
 		}
 
@@ -87,12 +77,7 @@ func handleWeatherDetail(recs store.RecordStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, idErr := parseRecordID(r.PathValue("id"))
 		if idErr != nil {
-			var badReq badRequestError
-			if errors.As(idErr, &badReq) {
-				writeError(w, r, http.StatusBadRequest, badReq.Error())
-				return
-			}
-			writeErrorCause(w, r, http.StatusInternalServerError, msgInternal, idErr)
+			writeParamError(w, r, idErr)
 			return
 		}
 

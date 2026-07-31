@@ -88,6 +88,13 @@ func TestChainStatusWireLiterals(t *testing.T) {
 		if string(c.got) != c.want {
 			t.Errorf("chain status literal = %q, want %q", string(c.got), c.want)
 		}
+		// The POSITIVE half of Valid(). Without it the invalid loop below is
+		// satisfied by a Valid() that returns false for everything, including all
+		// four real statuses — which would make the whole enum unusable and this
+		// test green.
+		if !c.got.Valid() {
+			t.Errorf("ChainStatus(%q).Valid() = false, want true", string(c.got))
+		}
 	}
 
 	invalid := []store.ChainStatus{"", "ARC-ACCEPTED", "arc_accepted", "pending", "unknown"}

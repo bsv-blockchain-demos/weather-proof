@@ -28,12 +28,7 @@ func handleStationList(sts store.StationStore, now func() time.Time, pollRate ti
 
 		search, searchErr := parseSearch(q)
 		if searchErr != nil {
-			var badReq badRequestError
-			if errors.As(searchErr, &badReq) {
-				writeError(w, r, http.StatusBadRequest, badReq.Error())
-				return
-			}
-			writeErrorCause(w, r, http.StatusInternalServerError, msgInternal, searchErr)
+			writeParamError(w, r, searchErr)
 			return
 		}
 
@@ -83,12 +78,7 @@ func handleStationDetail(sts store.StationStore, now func() time.Time, pollRate 
 	return func(w http.ResponseWriter, r *http.Request) {
 		stationID, idErr := parsePathStationID(r.PathValue("stationId"))
 		if idErr != nil {
-			var badReq badRequestError
-			if errors.As(idErr, &badReq) {
-				writeError(w, r, http.StatusBadRequest, badReq.Error())
-				return
-			}
-			writeErrorCause(w, r, http.StatusInternalServerError, msgInternal, idErr)
+			writeParamError(w, r, idErr)
 			return
 		}
 

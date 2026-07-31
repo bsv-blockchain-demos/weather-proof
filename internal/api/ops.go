@@ -125,10 +125,10 @@ func NewOpsRouter(d Deps) http.Handler {
 	// deferred recovery.
 	d.Logger = orDefaultLogger(d.Logger)
 
-	hub := d.Hub
-	if hub == nil {
-		hub = NewHub(sseGlobalMax, sseConcurrentPerIP, d.Logger)
-	}
+	// Same fallback as NewRouter, and the same warning when it fires: an
+	// unshared hub here is exactly the case that makes this router's own
+	// sseClients gauge read zero forever. See orFallbackHub.
+	hub := orFallbackHub(d.Hub, d.Logger, "ops")
 
 	mux.HandleFunc(pathOps, onlyGET(handleOps(d.Store.Records, d.Store.Stations, hub)))
 	mux.HandleFunc("/", notFoundJSON)

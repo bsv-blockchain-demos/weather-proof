@@ -109,6 +109,28 @@ CREATE TABLE IF NOT EXISTS app_stats (
 );
 INSERT INTO app_stats (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 
+-- ---------- the txid ledger behind app_stats.total_tx ----------
+-- This table exists ONLY so total_tx can mean what it says. Complete used to do
+-- `total_tx = total_tx + 1` per CALL, so a txid applied to a second processing
+-- set -- a retry, a duplicated action, a chunked publish reusing one
+-- transaction -- counted twice, and the dashboard's headline number drifted
+-- upward with no way to notice or correct it.
+--
+-- The primary key IS the mechanism: Complete inserts the txid ON CONFLICT DO
+-- NOTHING inside its own transaction and increments total_tx only when the
+-- insert actually took a row. That makes "distinct" a property enforced by the
+-- schema rather than by every caller remembering not to reuse a txid.
+--
+-- Deliberately NOT a foreign key onto weather_records.txid: that column is not
+-- unique (one transaction publishes many records) and a completed row can later
+-- be requeued, which would either block the requeue or cascade away the ledger
+-- entry -- and a transaction that reached the chain stays counted regardless of
+-- what happens to the rows afterwards.
+CREATE TABLE IF NOT EXISTS completed_txids (
+  txid       text        PRIMARY KEY,
+  first_seen timestamptz NOT NULL DEFAULT now()
+);
+
 -- ---------- operator deposits ----------
 CREATE TABLE IF NOT EXISTS deposits (
   suffix          text        PRIMARY KEY,

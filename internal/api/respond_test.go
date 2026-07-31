@@ -16,9 +16,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
-	"github.com/bsv-blockchain-demos/weather-proof/internal/store"
 	"github.com/bsv-blockchain-demos/weather-proof/internal/store/fake"
 )
 
@@ -30,19 +30,44 @@ import (
 // No test in this package calls t.Parallel, so swapping a process-global for the
 // length of one test is safe here; a parallel test would have to plumb a handler
 // instead.
-func captureDefaultLogger(t *testing.T) *bytes.Buffer {
+func captureDefaultLogger(t *testing.T) *syncBuffer {
 	t.Helper()
 
-	buf := &bytes.Buffer{}
+	buf := &syncBuffer{}
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	t.Cleanup(func() { slog.SetDefault(previous) })
 	return buf
 }
 
+// syncBuffer is a bytes.Buffer behind a mutex.
+//
+// A plain *bytes.Buffer is NOT safe for concurrent use, and once the default
+// logger points at one, the goroutines that write to it are no longer this test's
+// to enumerate: slog serializes nothing itself, the hub logs from its own
+// goroutine, and a handler under test may spawn more. Reading the accumulated
+// bytes while any of them is mid-Write is the same data race from the other
+// direction, so String takes the lock too.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 // logRecords parses every line the capture buffer collected. A JSON handler
 // writes one object per record, so a scanner over lines is the whole parser.
-func logRecords(t *testing.T, buf *bytes.Buffer) []map[string]any {
+func logRecords(t *testing.T, buf *syncBuffer) []map[string]any {
 	t.Helper()
 
 	records := make([]map[string]any, 0, 4)
@@ -74,8 +99,9 @@ func storeFailure() error {
 // TestFiveHundredLogsTheSameRequestIDAsTheBody is the gate on the correlation
 // id being USABLE. Before the final fix wave no 500 path logged anything at all:
 // every response carried {"error":"internal server error","request_id":"…"} and
-// a grep of the logs for that id returned nothing, which makes the id
-// decoration (plan Global Constraints, spec §12.5, docs/api.md "Error bodies").
+// a grep of the logs for that id returned nothing, which made the id decoration
+// and nothing more (plan Global Constraints, spec §12.5, docs/api.md "Error
+// bodies").
 //
 // The assertion is EQUALITY of the two captured strings — the id in the body and
 // the id in the log record — not that each is separately non-empty. Two
@@ -180,23 +206,6 @@ func TestReadyLogsThePingFailure(t *testing.T) {
 	}
 }
 
-// panickingRecords panics on the two methods the two routers reach — List for
-// GET /api/weather, Snapshot for GET /api/ops. It embeds the interface so the
-// remaining methods exist without being written out; none of them is called.
-type panickingRecords struct{ store.RecordStore }
-
-// panicMessage is the panic value both routers' tests drive. It must not appear
-// in any response body.
-const panicMessage = "handler panic with a nil Deps.Logger"
-
-func (panickingRecords) List(_ context.Context, _ store.ListFilter) ([]store.Record, int64, error) {
-	panic(panicMessage)
-}
-
-func (panickingRecords) Snapshot(_ context.Context) (store.Snapshot, error) {
-	panic(panicMessage)
-}
-
 // nilLoggerDeps is testDeps with Logger explicitly cleared. It also points the
 // default logger at a discard sink, so the coerced logger's own output does not
 // pollute the test log — the coercion is still exercised, since NewRouter has to
@@ -225,7 +234,7 @@ func nilLoggerDeps(t *testing.T) Deps {
 // because the constructor never touches the logger — the recovery path does.
 func TestNewRouterToleratesANilLoggerThroughAPanic(t *testing.T) {
 	d := nilLoggerDeps(t)
-	d.Store.Records = panickingRecords{}
+	d.Store.Records = panicRecordStore{}
 
 	rec := httptest.NewRecorder()
 	NewRouter(d).ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, pathWeather, nil))
@@ -237,7 +246,7 @@ func TestNewRouterToleratesANilLoggerThroughAPanic(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), msgInternal) {
 		t.Errorf("body = %q, want the opaque %q", rec.Body.String(), msgInternal)
 	}
-	if strings.Contains(rec.Body.String(), panicMessage) {
+	if strings.Contains(rec.Body.String(), panicMsg) {
 		t.Errorf("body %q leaks the panic value", rec.Body.String())
 	}
 }
@@ -254,7 +263,7 @@ func TestNewOpsRouterToleratesANilLogger(t *testing.T) {
 	}
 
 	panicking := nilLoggerDeps(t)
-	panicking.Store.Records = panickingRecords{}
+	panicking.Store.Records = panicRecordStore{}
 
 	panicRec := httptest.NewRecorder()
 	NewOpsRouter(panicking).ServeHTTP(panicRec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, pathOps, nil))

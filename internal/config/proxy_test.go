@@ -50,10 +50,16 @@ func TestParseCIDRListRejectsAMalformedEntry(t *testing.T) {
 	if !strings.Contains(err.Error(), "TRUSTED_PROXY_CIDRS") {
 		t.Errorf("ParseCIDRList() = %q, want it to name TRUSTED_PROXY_CIDRS", err.Error())
 	}
-	if !strings.Contains(err.Error(), "1") {
+	// The whole phrase, not a bare "1": the message contains the digit 1 inside
+	// "10.0.0.0" too, so the loose check passed for an error that named the wrong
+	// index — or no index at all.
+	if !strings.Contains(err.Error(), "entry 1 ") {
 		t.Errorf("ParseCIDRList() = %q, want it to name index 1", err.Error())
 	}
-	if strings.Contains(err.Error(), "99") {
+	// The COMPLETE entry, not just its prefix length: "99" alone is absent from a
+	// message that echoes "10.0.0.0/9" or the bare "10.0.0.0", so the no-echo
+	// claim was only half asserted.
+	if strings.Contains(err.Error(), "10.0.0.0/99") || strings.Contains(err.Error(), "99") {
 		t.Errorf("ParseCIDRList() = %q, must not echo the entry's text", err.Error())
 	}
 }

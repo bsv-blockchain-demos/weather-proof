@@ -45,14 +45,35 @@ func TestMigrateIsIdempotent(t *testing.T) {
 		t.Fatalf("third Migrate: %v", err)
 	}
 
-	var tables int
-	err := pool.QueryRow(ctx,
-		"SELECT count(*) FROM pg_tables WHERE schemaname = $1", storeSchema.Name).Scan(&tables)
+	// The NAMES, for exactly the reason spelled out for the indexes below: the
+	// count was an opaque 5 that had to be bumped by hand, and adding
+	// completed_txids produced "tables = 6, want 5" — a message that names every
+	// table EXCEPT the one that changed. Comparing names means one edit in one
+	// place and a failure that says which table appeared or vanished.
+	tableRows, err := pool.Query(ctx,
+		"SELECT tablename FROM pg_tables WHERE schemaname = $1 ORDER BY tablename", storeSchema.Name)
 	if err != nil {
-		t.Fatalf("counting tables: %v", err)
+		t.Fatalf("listing tables: %v", err)
 	}
-	if tables != 5 {
-		t.Fatalf("tables = %d, want 5 (weather_records, stations, app_stats, deposits, app_preflight)", tables)
+	gotTables, err := pgx.CollectRows(tableRows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("collecting table names: %v", err)
+	}
+	wantTables := []string{
+		"app_preflight",
+		"app_stats",
+		"completed_txids",
+		"deposits",
+		"stations",
+		"weather_records",
+	}
+	if len(gotTables) != len(wantTables) {
+		t.Fatalf("tables = %v (%d), want %v (%d)", gotTables, len(gotTables), wantTables, len(wantTables))
+	}
+	for i := range wantTables {
+		if gotTables[i] != wantTables[i] {
+			t.Fatalf("tables = %v, want %v", gotTables, wantTables)
+		}
 	}
 
 	// The NAMES, not a count. A count is an opaque integer that has to be

@@ -446,6 +446,19 @@ CREATE TABLE IF NOT EXISTS app_stats (
 );
 INSERT INTO app_stats (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 
+-- ---------- the txid ledger behind app_stats.total_tx ----------
+-- total_tx says DISTINCT, and this table is what makes that true rather than
+-- merely intended: `+= 1 per Complete CALL` counted a retried or reused txid
+-- twice. Complete inserts here ON CONFLICT DO NOTHING inside its own
+-- transaction and increments total_tx only when the insert took a row.
+-- NOT a foreign key onto weather_records.txid: that column is not unique (one
+-- transaction, many records) and a completed row can later be requeued, while a
+-- transaction that reached the chain stays counted regardless.
+CREATE TABLE IF NOT EXISTS completed_txids (
+  txid       text        PRIMARY KEY,
+  first_seen timestamptz NOT NULL DEFAULT now()
+);
+
 -- ---------- operator deposits ----------
 CREATE TABLE IF NOT EXISTS deposits (
   suffix          text PRIMARY KEY,          -- base64, random 16 bytes
@@ -471,7 +484,9 @@ Six record indexes, each justified: unique dedupe, queue scan, station history (
 **Stats semantics, fixing the two HEAD bugs of §2.2.** In the same Postgres transaction as `Complete`:
 
 ```
-app_stats.total_tx          += 1                     -- ONE per CreateAction, not per record
+app_stats.total_tx          += 1 IF NEW           -- per DISTINCT txid: never per record, never per CALL
+                                                     -- (INSERT INTO completed_txids ... ON CONFLICT DO NOTHING
+                                                     --  in the same transaction decides "new")
 app_stats.total_records     += len(batch)
 app_stats.last_record_write  = greatest(last_record_write, now())
 stations.tx_records         += (records for that station)
@@ -2641,7 +2656,7 @@ Covered in §7.4. The contract is **self-referential by design**: the goldens ar
 | 20 | Deposit | Vout resolution at a non-zero index; failure when absent; a per-deposit suffix is generated (not a constant). |
 | 21 | Shutdown budget | Per-call timeouts < wait budget < grace period; the poller honours `ctx.Done` **between stations**. |
 | 22 | **Integration (or a sampled runtime check)** | Fetch a published transaction and assert the weather script sits at the **expected vout**, and that the transaction has **exactly N outputs with no change output** (§8.6). With `ReturnTXIDOnly: true` the `CreateAction` result carries no outputs, so the persisted vout is otherwise never checked against reality — a future server-side output reordering (e.g. a commission output moving ahead of provided outputs) would corrupt every record silently. |
-| 23 | Stats | `Complete` bumps `total_tx` by **1 per transaction** (not per record) and `total_records` by the batch size, in one transaction; `activeStations` reflects `stations.is_active` and can never be stuck at 0; `weather stats-recompute` reproduces the incremental counters from scratch. |
+| 23 | Stats | `Complete` bumps `total_tx` by **1 per DISTINCT transaction** and `total_records` by the batch size, in one transaction. Distinct means neither per record nor per `Complete` **call**: the `completed_txids` ledger insert (`ON CONFLICT DO NOTHING`, same transaction) decides whether the txid is new, so a retried or reused txid cannot double-count. `activeStations` reflects `stations.is_active` and can never be stuck at 0. `weather stats-recompute` reproduces the incremental counters from scratch — and **must rebuild `completed_txids` along with them** (`SELECT DISTINCT txid FROM weather_records WHERE txid IS NOT NULL`), or the first `Complete` after a recompute recounts a transaction already in `total_tx`. |
 
 ### 17.3 CI
 

@@ -1,13 +1,13 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -52,7 +52,13 @@ func testDeps(t *testing.T) Deps {
 		Store:    s.Store(),
 		Now:      func() time.Time { return routerFixedNow },
 		PollRate: time.Minute,
-		Logger:   slog.Default(),
+
+		// slog.Default() is read HERE, when testDeps is called — not later, when
+		// the router runs. A test whose assertions depend on the captured logger
+		// must therefore call captureDefaultLogger BEFORE testDeps, or this field
+		// holds the logger that was default beforehand and the capture buffer
+		// stays empty.
+		Logger: slog.Default(),
 
 		// 60 is PROOF_RATE_LIMIT_PER_MIN's default, written as a literal here so
 		// a test that cares about the proof scope's number sets its own.
@@ -244,7 +250,11 @@ func TestRouterRejectsAnUnregisteredMethodOnAKnownPath(t *testing.T) {
 func TestRouterQueryParametersReachTheHandler(t *testing.T) {
 	h := NewRouter(testDeps(t))
 
-	target := "/api/weather?stationId=" + "42" + "&limit=1"
+	// Derived from routerSeededStationID rather than written as "42": the
+	// assertion below compares against that constant, so a literal here lets the
+	// two drift and the test then passes by filtering on a station id nothing
+	// seeded.
+	target := "/api/weather?stationId=" + strconv.FormatInt(routerSeededStationID, 10) + "&limit=1"
 	rec := doGet(t, h, target)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("got status %d, want 200; body=%s", rec.Code, rec.Body.String())
@@ -267,13 +277,24 @@ func TestRouterQueryParametersReachTheHandler(t *testing.T) {
 }
 
 // panicRecordStore embeds a nil store.RecordStore so it satisfies the
-// interface via promotion, and overrides only List to panic. No other method
-// is ever called through the /api/weather route this test drives.
+// interface via promotion, and overrides the two methods the two routers reach:
+// List for GET /api/weather and Snapshot for GET /api/ops. No other method is
+// ever called through those routes.
+//
+// One type for both routers, and one panic value: respond_test.go carried a
+// second, near-identical store with its own message, so a change to how a panic
+// is driven had two places to land in and one of them would be missed.
+// panicMsg is deliberately driver-shaped — the assertions on it are that it does
+// NOT reach a body.
 type panicRecordStore struct {
 	store.RecordStore
 }
 
 func (panicRecordStore) List(_ context.Context, _ store.ListFilter) ([]store.Record, int64, error) {
+	panic(errors.New(panicMsg))
+}
+
+func (panicRecordStore) Snapshot(_ context.Context) (store.Snapshot, error) {
 	panic(errors.New(panicMsg))
 }
 
@@ -287,8 +308,8 @@ func (panicRecordStore) List(_ context.Context, _ store.ListFilter) ([]store.Rec
 // both for the logged attrs and (via writeError) for the response body, so
 // the two go empty/blank together and the equality below breaks.
 func TestNewRouterOrdersRequestIDOutsideRecovery(t *testing.T) {
-	var buf bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	buf := &syncBuffer{}
+	logger := slog.New(slog.NewJSONHandler(buf, nil))
 
 	d := testDeps(t)
 	d.Logger = logger
@@ -317,13 +338,21 @@ func TestNewRouterOrdersRequestIDOutsideRecovery(t *testing.T) {
 		t.Fatalf("body request_id %q does not equal response header %q", body.RequestID, headerID)
 	}
 
-	var logRecord map[string]any
-	if err := json.Unmarshal(buf.Bytes(), &logRecord); err != nil {
-		t.Fatalf("unmarshal log line: %v; raw=%s", err, buf.String())
+	// Scanned line by line through logRecords, NOT unmarshaled as one object: a
+	// JSON handler writes one object per record, so the whole-buffer decode this
+	// replaces held only as long as the router emitted exactly one record for the
+	// request — any second record (a startup warning, a second handler log) turned
+	// the buffer into two concatenated objects and the test failed on "invalid
+	// character '{'" with nothing to do with request ids.
+	logID := ""
+	for _, record := range logRecords(t, buf) {
+		if id, isString := record["request_id"].(string); isString && id != "" {
+			logID = id
+			break
+		}
 	}
-	logID, _ := logRecord["request_id"].(string)
 	if logID == "" {
-		t.Fatalf("expected a non-empty request_id in the log line")
+		t.Fatalf("no log record carried a non-empty request_id; raw=%s", buf.String())
 	}
 	if logID != headerID {
 		t.Fatalf("logged request_id %q does not equal response header %q", logID, headerID)
@@ -380,6 +409,19 @@ func TestRouterPatternInventoryIsExactlyTheExpectedSet(t *testing.T) {
 		if rec.Code != http.StatusNotImplemented {
 			t.Errorf("%s: got status %d, want 501 (registered, handler pending)", target, rec.Code)
 		}
+	}
+
+	// POST /api/verify, explicitly. It is the API's only non-GET route, so the
+	// GET-driven loop above cannot reach it: a GET to that path answers 405 from
+	// onlyMethod, which looks like a registered pattern whether or not the POST
+	// handler is wired. Only a POST distinguishes "registered behind its limiter
+	// scope" from "not registered at all", and an unregistered verify scope is a
+	// scope that ships unlimited.
+	verifyReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, pathVerify, nil)
+	verifyRec := httptest.NewRecorder()
+	h.ServeHTTP(verifyRec, verifyReq)
+	if verifyRec.Code != http.StatusNotImplemented {
+		t.Errorf("POST %s: got status %d, want 501 (registered, handler pending)", pathVerify, verifyRec.Code)
 	}
 
 	// /api/events now carries a real handler and streams until the client

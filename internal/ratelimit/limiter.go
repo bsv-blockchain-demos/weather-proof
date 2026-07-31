@@ -9,6 +9,9 @@ import (
 // DefaultMaxKeys is spec §6.1's bound on the key map.
 const DefaultMaxKeys = 10_000
 
+// DefaultWindow is the fixed-window length a non-positive window is coerced to.
+const DefaultWindow = time.Minute
+
 // Decision is what the middleware needs to write RateLimit-Limit,
 // RateLimit-Remaining, RateLimit-Reset and Retry-After.
 type Decision struct {
@@ -71,6 +74,13 @@ type Limiter struct {
 // maxKeys caps the key map; pass DefaultMaxKeys. A maxKeys below 1 is coerced to
 // DefaultMaxKeys so a zero-valued wiring cannot produce an unbounded map.
 //
+// A non-positive window is coerced to DefaultWindow for the same reason and
+// against a worse failure: Allow starts a fresh window whenever
+// now.Sub(w.start) >= l.window, and with window 0 (or negative) that is true on
+// every single call, so the count resets before every check and the limiter
+// NEVER refuses. It fails open and silently, and ResetAfter collapses to 0 so
+// the few refusals a caller might still see advertise Retry-After: 0.
+//
 // now is injectable so tests need no wall clock; a nil now means time.Now.
 func New(limit, burst int, window time.Duration, maxKeys int, now func() time.Time) *Limiter {
 	if now == nil {
@@ -78,6 +88,9 @@ func New(limit, burst int, window time.Duration, maxKeys int, now func() time.Ti
 	}
 	if maxKeys < 1 {
 		maxKeys = DefaultMaxKeys
+	}
+	if window <= 0 {
+		window = DefaultWindow
 	}
 	return &Limiter{
 		limit:   limit,

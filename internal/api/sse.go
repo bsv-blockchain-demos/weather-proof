@@ -306,7 +306,15 @@ var sseHeartbeatInterval = 30 * time.Second
 // failed converts a transient DB blip into a dead Live dot until the user
 // reloads the page. The first push is omitted and logged at WARN instead.
 // Pinned by TestEventsStatsFailureStillOpensTheStream.
-func handleEvents(h *Hub, sts store.StationStore, res ratelimit.Resolver) http.HandlerFunc {
+// log is the INJECTED logger, not slog's package default. The two register
+// failures below are the only error-level records this handler can emit, and
+// emitting them through slog.ErrorContext sent them somewhere the caller's
+// Deps.Logger does not reach: a cmd/ that configures a logger without also
+// calling slog.SetDefault would split this handler's records away from every
+// other record the router produces, so the one place an operator looks for them
+// would be the one place they are not.
+func handleEvents(h *Hub, sts store.StationStore, res ratelimit.Resolver, log *slog.Logger) http.HandlerFunc {
+	log = orDefaultLogger(log)
 	return func(w http.ResponseWriter, r *http.Request) {
 		ch, unregister, regErr := h.Register(res.Key(r))
 		if regErr != nil {
@@ -319,7 +327,7 @@ func handleEvents(h *Hub, sts store.StationStore, res ratelimit.Resolver) http.H
 			case errors.Is(regErr, ErrPerIPFull):
 				writeError(w, r, http.StatusTooManyRequests, msgTooManyStreams)
 			default:
-				slog.ErrorContext(r.Context(), "sse register failed", "error", regErr)
+				log.ErrorContext(r.Context(), "sse register failed", "error", regErr)
 				writeError(w, r, http.StatusInternalServerError, msgInternal)
 			}
 			return
@@ -343,7 +351,7 @@ func handleEvents(h *Hub, sts store.StationStore, res ratelimit.Resolver) http.H
 		// The FIRST push, on connect, so the tiles populate without waiting a
 		// broadcast interval (spec §13.7).
 		if first, statsErr := sts.Stats(r.Context()); statsErr != nil {
-			slog.WarnContext(r.Context(), "sse first stats push omitted",
+			log.WarnContext(r.Context(), "sse first stats push omitted",
 				"request_id", requestIDFrom(r.Context()), "error", statsErr)
 		} else if frameErr := writeStatsFrame(w, rc, toStats(first)); frameErr != nil {
 			return

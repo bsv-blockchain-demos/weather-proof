@@ -6,7 +6,7 @@ against `internal/store/fake` — needs nothing.
 
 ## Locally
 
-```
+```sh
 make pg-up        # starts the compose `postgres` service on 127.0.0.1:5432
 make go-test-pg   # runs ./internal/store/... against it
 make pg-psql      # a psql shell inside the container
@@ -35,7 +35,7 @@ vacuous one.
 is not, the harness calls `t.Fatal` instead of `t.Skip`. CI sets both. You can
 see the tripwire work:
 
-```
+```sh
 WEATHER_TEST_REQUIRE_POSTGRES=1 go test ./internal/store/... -count=1
 ```
 

@@ -157,3 +157,29 @@ an attempt without terminating the row (so the attempt budget collapses to 1 rat
 3), resetting `attempts`, and writing `chain_status` `unmined`/`aborted` — which means
 `Snapshot.AbortedCount` is structurally always zero, a bucket that was proved individually
 wired and that nothing can increment. Resolve before Plan C relies on any of it.
+
+## 8. `stats-recompute` owes the txid ledger, not just the counters
+
+`app_stats.total_tx` is documented as a count of DISTINCT on-chain transactions, and it is
+now enforced rather than intended: `Complete` inserts the txid into `completed_txids`
+(`ON CONFLICT DO NOTHING`, inside its own transaction) and increments `total_tx` only when
+the insert took a row. Before that, `total_tx` moved once per `Complete` **call**, so one
+txid applied to a second processing set — a retry after a partial failure, a duplicated
+operator action, a chunked publish reusing one transaction — counted twice, and the
+dashboard's headline number drifted upward with nothing able to notice or correct it.
+
+**Whichever plan implements `weather stats-recompute` must rebuild `completed_txids` in the
+same pass as the counters:**
+
+```sql
+INSERT INTO completed_txids (txid)
+SELECT DISTINCT txid FROM weather_records WHERE txid IS NOT NULL
+ON CONFLICT (txid) DO NOTHING;
+```
+
+Recomputing `total_tx` from `count(DISTINCT txid)` while leaving the ledger empty leaves
+the two out of step in the direction that double-counts: the next `Complete` for an already
+counted txid finds no ledger row, takes the increment, and re-counts a transaction that is
+already in the total. The conformance case
+`CompleteCountsATxIDOnceNoMatterHowManyActionsUseIt` covers the write path but cannot see a
+recompute that never runs.

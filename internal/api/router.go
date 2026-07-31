@@ -54,6 +54,29 @@ func orDefaultLogger(log *slog.Logger) *slog.Logger {
 	return log
 }
 
+// orFallbackHub returns d.Hub, or a fresh hub if it is nil — and SAYS SO when it
+// falls back.
+//
+// The fallback keeps a caller that forgot the field from panicking on the first
+// connection, but it also quietly breaks the single-hub guarantee Deps.Hub
+// documents: NewRouter and NewOpsRouter each build their own, so /api/ops
+// reports sseClients off a hub that no SSE stream ever registered in, and the
+// gauge reads a permanent zero with nothing anywhere to explain it. A degraded
+// gauge that announces itself is recoverable; a silent one is what makes an
+// operator distrust the whole page.
+//
+// Warn rather than fail: refusing to build a router would turn a metrics defect
+// into an outage, and it is one line in both constructors.
+func orFallbackHub(h *Hub, log *slog.Logger, router string) *Hub {
+	if h != nil {
+		return h
+	}
+	log.Warn("no shared SSE hub was supplied; this router built its own",
+		"router", router,
+		"consequence", "/api/ops reports sseClients from a hub no stream is registered in")
+	return NewHub(sseGlobalMax, sseConcurrentPerIP, log)
+}
+
 // onlyGET wraps a handler so that any method other than GET answers the JSON
 // 405 shape with an Allow header, instead of falling through to the
 // handler. This exists because net/http.ServeMux's own method-mismatch 405
@@ -102,9 +125,11 @@ func methodNotAllowedJSON(w http.ResponseWriter, r *http.Request, allowed string
 // wrapping, not mux pattern precedence — do not "fix" the order thinking it
 // changes matching.
 //
-// The four read routes are registered as eight patterns — each path plus its
+// The four read routes are registered as six patterns — each LIST path plus its
 // "{$}" twin — because Go 1.22's ServeMux does not match a trailing slash
-// against an exact pattern:
+// against an exact pattern. The two DETAIL routes have no twin: "{id}" already
+// requires a non-empty segment, so there is no trailing-slash spelling of them
+// to catch.
 //
 //	GET /api/weather            GET /api/weather/{$}
 //	GET /api/weather/{id}
@@ -123,6 +148,15 @@ func NewRouter(d Deps) http.Handler {
 	// recovery, so a nil there turns the first panic in any handler into a
 	// second panic during recovery — no 500, no log, connection aborted.
 	d.Logger = orDefaultLogger(d.Logger)
+
+	// Now is coerced next to Logger and for the same reason: Deps is documented
+	// as supporting a partially-filled value, and d.Now is passed straight to
+	// newLimiters and to the health and station handlers, where CALLING a nil
+	// func panics. A nil Logger was the first field that broke that contract;
+	// this was the second.
+	if d.Now == nil {
+		d.Now = time.Now
+	}
 
 	lim := newLimiters(d.ProofRateLimitPerMin, d.Now)
 	res := ratelimit.Resolver{Trusted: d.Trusted}
@@ -154,11 +188,8 @@ func NewRouter(d Deps) http.Handler {
 	// marker the stream inherits withWriteDeadline's 30 s budget and every
 	// connection dies at 30 seconds with no error anywhere. Pinned
 	// behaviorally by TestEventsHasNoWriteDeadline.
-	hub := d.Hub
-	if hub == nil {
-		hub = NewHub(sseGlobalMax, sseConcurrentPerIP, d.Logger)
-	}
-	mux.Handle(pathEvents, withLimit(lim.sse, res)(markSSEExempt(onlyGET(handleEvents(hub, d.Store.Stations, res)))))
+	hub := orFallbackHub(d.Hub, d.Logger, "api")
+	mux.Handle(pathEvents, withLimit(lim.sse, res)(markSSEExempt(onlyGET(handleEvents(hub, d.Store.Stations, res, d.Logger)))))
 
 	// ── 4-5. The two scopes whose HANDLERS are B3's. The scopes are wired and
 	// tested now because a scope wired later is a scope that ships unlimited.

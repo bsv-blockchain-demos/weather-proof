@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/bsv-blockchain-demos/weather-proof/internal/store"
 	"github.com/bsv-blockchain-demos/weather-proof/internal/store/postgres"
@@ -212,23 +214,42 @@ func TestReapExpiredOnAnIdleQueueReturnsNothing(t *testing.T) {
 	}
 }
 
-func TestRequeueDryRunCountsWithoutWriting(t *testing.T) {
-	pool := storetest.Fresh(t, storeSchema)
+// seedFailed inserts n backdated failed rows with attempts 5, ids prefixed with
+// prefix, and station ids alternating between 1000 and 1001 when split is true —
+// the fixture three Requeue tests each built inline with the same nine-line
+// INSERT. One definition, so a change to the fixture's shape (a new NOT NULL
+// column, a different backdate) cannot land in two of the three and be missed in
+// the third.
+//
+// The backdate is 2 hours on both processed_at and created_at, which puts every
+// row inside a `Since: time.Hour` window.
+func seedFailed(t testing.TB, pool *pgxpool.Pool, n int, prefix string, split bool) {
+	t.Helper()
 	ctx := context.Background()
-	rs := postgres.NewRecordStore(pool)
-
-	for i := range 4 {
+	for i := range n {
+		stationID := int64(1000)
+		if split {
+			stationID = int64(1000 + i%2)
+		}
 		if _, err := pool.Exec(ctx, `
 			INSERT INTO weather_records
 			  (id, station_id, timestamp, observation_time, data, status, attempts,
 			   processed_at, created_at)
 			VALUES ($1, $2, now(), $3, $4, 'failed', 5, now() - interval '2 hours',
 			        now() - interval '2 hours')`,
-			"f"+string(rune('a'+i)), int64(1000+i%2),
+			prefix+strconv.Itoa(i), stationID,
 			time.Now().Add(time.Duration(i)*time.Minute), fullWeatherData()); err != nil {
-			t.Fatalf("seeding %d: %v", i, err)
+			t.Fatalf("seedFailed %s%d: %v", prefix, i, err)
 		}
 	}
+}
+
+func TestRequeueDryRunCountsWithoutWriting(t *testing.T) {
+	pool := storetest.Fresh(t, storeSchema)
+	ctx := context.Background()
+	rs := postgres.NewRecordStore(pool)
+
+	seedFailed(t, pool, 4, "f", true)
 
 	n, err := rs.Requeue(ctx, store.RequeueFilter{
 		Status: store.StatusFailed, Since: time.Hour, Limit: 100, DryRun: true,
@@ -255,18 +276,7 @@ func TestRequeueWritesAndFiltersByStation(t *testing.T) {
 	ctx := context.Background()
 	rs := postgres.NewRecordStore(pool)
 
-	for i := range 4 {
-		if _, err := pool.Exec(ctx, `
-			INSERT INTO weather_records
-			  (id, station_id, timestamp, observation_time, data, status, attempts,
-			   processed_at, created_at)
-			VALUES ($1, $2, now(), $3, $4, 'failed', 5, now() - interval '2 hours',
-			        now() - interval '2 hours')`,
-			"f"+string(rune('a'+i)), int64(1000+i%2),
-			time.Now().Add(time.Duration(i)*time.Minute), fullWeatherData()); err != nil {
-			t.Fatalf("seeding %d: %v", i, err)
-		}
-	}
+	seedFailed(t, pool, 4, "f", true)
 
 	station := int64(1000)
 	n, err := rs.Requeue(ctx, store.RequeueFilter{
@@ -502,18 +512,7 @@ func TestRequeueLeavesADifferentStatusRowUntouched(t *testing.T) {
 	ctx := context.Background()
 	rs := postgres.NewRecordStore(pool)
 
-	for i := range 2 {
-		if _, err := pool.Exec(ctx, `
-			INSERT INTO weather_records
-			  (id, station_id, timestamp, observation_time, data, status, attempts,
-			   processed_at, created_at)
-			VALUES ($1, 1000, now(), $2, $3, 'failed', 5, now() - interval '2 hours',
-			        now() - interval '2 hours')`,
-			"g"+string(rune('a'+i)), time.Now().Add(time.Duration(i)*time.Minute),
-			fullWeatherData()); err != nil {
-			t.Fatalf("seeding failed row %d: %v", i, err)
-		}
-	}
+	seedFailed(t, pool, 2, "g", false)
 
 	// A processing row, just as old as the failed ones (so the Since window
 	// alone would let it through) and on the same station (so a station

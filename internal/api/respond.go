@@ -104,6 +104,25 @@ func writeStoreError(w http.ResponseWriter, r *http.Request, err error) {
 	writeErrorCause(w, r, status, msg, err)
 }
 
+// writeParamError is writeStoreError's counterpart on the INPUT side: it is how
+// every handler answers a request-parameter parse failure. A badRequestError
+// carries a message written to be shown to a client and becomes a 400; anything
+// else is a defect in this package's own parsing and becomes the opaque 500 with
+// the real cause logged and never bodied.
+//
+// One function rather than the five identical branches it replaces, for exactly
+// the reason writeStoreError exists: five copies of an error mapping are five
+// places a newly added parse error can be classified differently, and the copy
+// that gets it wrong is the one that puts an internal message in a response.
+func writeParamError(w http.ResponseWriter, r *http.Request, err error) {
+	var badReq badRequestError
+	if errors.As(err, &badReq) {
+		writeError(w, r, http.StatusBadRequest, badReq.Error())
+		return
+	}
+	writeErrorCause(w, r, http.StatusInternalServerError, msgInternal, err)
+}
+
 // statusForStoreError maps a store error to its HTTP status and client-safe
 // message. It is the ONLY place in the package that turns an error into a
 // status, and its default branch NEVER formats the error into the body: a

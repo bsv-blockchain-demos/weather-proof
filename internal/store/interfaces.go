@@ -55,6 +55,9 @@ type RecordStore interface {
 	// ReapExpired reclaims rows stranded in processing past the lease. It
 	// returns whole Records rather than ids because the caller needs
 	// claim_ref to log and to reason about the adopt path.
+	//
+	// A non-positive limit means "no rows," never "unbounded" — the frozen rule
+	// stated on ListFilter.Limit, which every limit in this interface follows.
 	ReapExpired(ctx context.Context, lease time.Duration, limit int) ([]Record, error)
 
 	// Requeue is the operator-driven bulk requeue. It returns the affected
@@ -103,6 +106,9 @@ type RecordStore interface {
 
 	// ReconcileCandidates returns completed rows that are not yet known mined
 	// and were processed longer ago than olderThan.
+	//
+	// limit follows ListFilter.Limit's frozen rule: non-positive means "no
+	// rows," never "unbounded."
 	ReconcileCandidates(ctx context.Context, olderThan time.Duration, limit int) ([]Record, error)
 
 	// Snapshot is the row-count half of the operational heartbeat.
@@ -136,6 +142,11 @@ type StationStore interface {
 type DepositStore interface {
 	NewDeposit(ctx context.Context, d Deposit) error
 	PendingDeposits(ctx context.Context) ([]Deposit, error)
+	// MarkInternalized resolves a PENDING deposit's outpoint. It is not
+	// idempotent and deliberately not: a deposit whose outpoint is already
+	// recorded returns ErrConflict and is left untouched, because overwriting it
+	// would discard the only record tying the deposit to something on chain. An
+	// unknown suffix returns ErrNotFound, so a caller can tell the two apart.
 	MarkInternalized(ctx context.Context, suffix, txID string, vout int32, sats int64) error
 }
 
