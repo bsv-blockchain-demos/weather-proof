@@ -73,3 +73,41 @@ func handleWeatherList(recs store.RecordStore) http.HandlerFunc {
 		})
 	}
 }
+
+// msgWeatherNotFound is spec §13.5's verbatim 404 body message.
+const msgWeatherNotFound = "Weather record not found"
+
+// handleWeatherDetail serves GET /api/weather/{id}. The body is a BARE
+// weatherDetail — no envelope (spec §13.5).
+//
+// The status discipline is the point of this handler: the TypeScript let an
+// unparseable id become a Mongoose CastError caught into a 500 while the
+// frontend only special-cases 404. Go returns 400 for a syntactically invalid
+// id and 404 for an unknown one, and NEVER 500 for either.
+func handleWeatherDetail(recs store.RecordStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, idErr := parseRecordID(r.PathValue("id"))
+		if idErr != nil {
+			var badReq badRequestError
+			if errors.As(idErr, &badReq) {
+				writeError(w, r, http.StatusBadRequest, badReq.Error())
+				return
+			}
+			writeError(w, r, http.StatusInternalServerError, msgInternal)
+			return
+		}
+
+		rec, getErr := recs.Get(r.Context(), id)
+		if getErr != nil {
+			if errors.Is(getErr, store.ErrNotFound) {
+				writeError(w, r, http.StatusNotFound, msgWeatherNotFound)
+				return
+			}
+			httpStatus, msg := statusForStoreError(getErr)
+			writeError(w, r, httpStatus, msg)
+			return
+		}
+
+		writeJSON(w, r, http.StatusOK, toWeatherDetail(rec))
+	}
+}
