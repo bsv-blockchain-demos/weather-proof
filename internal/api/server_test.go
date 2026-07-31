@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -53,9 +54,13 @@ func serveOn(t *testing.T, srv *http.Server) string {
 func getOK(t *testing.T, url string) bool {
 	t.Helper()
 
+	// t.Errorf and a return, never t.Fatalf: getOK is called from a non-test
+	// goroutine by wedgedServer, and t.Fatalf off the test goroutine is
+	// undefined behavior (it calls runtime.Goexit on the wrong goroutine).
 	req, reqErr := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
 	if reqErr != nil {
-		t.Fatalf("new request: %v", reqErr)
+		t.Errorf("new request: %v", reqErr)
+		return false
 	}
 
 	client := &http.Client{Timeout: 3 * time.Second}
@@ -149,11 +154,18 @@ func TestAPIServerWriteTimeoutIsZeroAndThatIsDeliberate(t *testing.T) {
 	}
 }
 
-// TestReadHeaderTimeoutIsSetOnBothServers is the runtime sibling of gosec
-// G112, which flags a missing ReadHeaderTimeout on a composite &http.Server{}
-// literal. The lint rule is the primary gate; this test is what keeps the
-// property covered if the literal is ever refactored into a shape G112 does
-// not inspect.
+// TestReadHeaderTimeoutIsSetOnBothServers is the ONLY gate on this field. DO
+// NOT DELETE IT believing gosec G112 covers it — measured against this
+// repository's exact config, it does not:
+//
+//	ReadHeaderTimeout removed, ReadTimeout kept  -> golangci-lint: 0 issues
+//	both removed                                 -> gosec G112, 1 issue
+//
+// G112 fires only when a server literal carries NEITHER field, so with
+// ReadTimeout set the Slowloris defence can be deleted with a completely green
+// lint run. The plan's Global Constraints and spec §6.7 both state the
+// opposite; that is a documented error, adjudicated in Task 21's review. This
+// test is the primary gate and the lint rule is the fallback, not the reverse.
 func TestReadHeaderTimeoutIsSetOnBothServers(t *testing.T) {
 	if got := NewAPIServer(":0", &serverTestHandler{}).ReadHeaderTimeout; got == 0 {
 		t.Error("api server ReadHeaderTimeout is 0: Slowloris defence absent")
@@ -474,6 +486,10 @@ func TestAttachBaseContextCancelsAnInFlightRequest(t *testing.T) {
 // cannot return until its own 5 s deadline expires, so this asserts a TIME
 // BOUND — and the failure mode is a bounded wait, not a hang.
 func TestShutdownWithALiveSSEStreamCompletesWellUnderTheBudget(t *testing.T) {
+	// Goroutine-leak baseline, sampled before anything is started. See the
+	// settle loop at the end of this test for why the bound is not exact.
+	baselineGoroutines := runtime.NumGoroutine()
+
 	d := testDeps(t)
 	srv := NewAPIServer("", NewRouter(d))
 
@@ -491,7 +507,8 @@ func TestShutdownWithALiveSSEStreamCompletesWellUnderTheBudget(t *testing.T) {
 		t.Fatalf("new request: %v", reqErr)
 	}
 
-	resp, doErr := (&http.Client{}).Do(req)
+	client := &http.Client{}
+	resp, doErr := client.Do(req)
 	if doErr != nil {
 		t.Fatalf("open stream: %v", doErr)
 	}
@@ -546,4 +563,45 @@ func TestShutdownWithALiveSSEStreamCompletesWellUnderTheBudget(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("Shutdown never returned with a live SSE stream attached")
 	}
+
+	// ── Goroutine-leak gate, scoped to the CLEAN-shutdown case.
+	//
+	// It lives here rather than in its own test because this is the only test
+	// in the file whose shutdown is clean: TestShutdownRespectsTheBudget and the
+	// canceled-parent test both leave a WEDGED handler goroutine parked on a
+	// channel by design (accepted behavior — it is bounded only by process
+	// exit), so a leak assertion around either of those would contradict the
+	// contract they pin.
+	//
+	// Everything this test started must be gone once Shutdown has returned: the
+	// SSE handler's goroutine (returned on ctx.Done), the Serve goroutine
+	// (returned with ErrServerClosed) and the transport's read loop.
+	_ = resp.Body.Close()
+	client.CloseIdleConnections()
+
+	// A BOUNDED assertion, not exact equality, and sampled in a settle loop
+	// rather than after a sleep. Goroutine teardown is asynchronous — the
+	// transport's read/write loops and Serve's per-connection goroutine all exit
+	// on their own schedule — and NumGoroutine also counts goroutines belonging
+	// to OTHER work in the process (the testing framework, and any parallel
+	// package under `go test ./...`). An exact equality would therefore be a
+	// flake, especially under -race -count=5. The tolerance is small enough that
+	// a real leak — one goroutine per live stream, which is the failure mode
+	// worth catching — still trips it, because that failure grows with every
+	// connection rather than staying inside a fixed slack.
+	const goroutineSlack = 3
+
+	settled := baselineGoroutines
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		settled = runtime.NumGoroutine()
+		if settled <= baselineGoroutines+goroutineSlack {
+			return
+		}
+		runtime.Gosched()
+	}
+
+	t.Errorf("goroutines: %d before, %d after a clean shutdown (slack %d): the SSE handler, "+
+		"the Serve goroutine or a transport read loop leaked",
+		baselineGoroutines, settled, goroutineSlack)
 }

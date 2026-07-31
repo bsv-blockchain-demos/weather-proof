@@ -17,8 +17,15 @@ import (
 // keeps a real WriteTimeout.
 //
 // Go's http.Server has no useful defaults: ReadHeaderTimeout in particular is
-// the Slowloris defence the zero value lacks, and gosec G112 flags its
-// absence on any hand-built &http.Server{}.
+// the Slowloris defence the zero value lacks.
+//
+// gosec G112 does NOT reliably catch its absence, contrary to the plan's Global
+// Constraints and spec §6.7. Measured against this repository's exact config:
+// with ReadTimeout still present, deleting ReadHeaderTimeout from either
+// literal below yields a completely GREEN lint run; G112 fires only when a
+// literal carries NEITHER field. TestReadHeaderTimeoutIsSetOnBothServers is
+// therefore the only gate on this field — do not delete it thinking lint has
+// it covered.
 const (
 	readHeaderTimeout = 10 * time.Second
 	readTimeout       = 15 * time.Second
