@@ -170,8 +170,13 @@ func (c *Config) rule5() error {
 	if !strings.HasPrefix(u, "https://") {
 		return errors.New("WALLET_STORAGE_URL: must use https")
 	}
-	rest := strings.TrimPrefix(u, "https://")
-	if strings.ContainsAny(rest, "/") {
+	// A single TRAILING slash is ACCEPTED, because the doc comment above says
+	// "no path beyond /" and "https://host/" is a plausible value — a copy out
+	// of a browser address bar produces exactly that. Rejecting it failed
+	// closed with a message reading as though a path had been supplied.
+	// Anything after that slash is a path and still fails.
+	rest := strings.TrimSuffix(strings.TrimPrefix(u, "https://"), "/")
+	if strings.Contains(rest, "/") {
 		return errors.New("WALLET_STORAGE_URL: must be a bare host with no path")
 	}
 	return nil

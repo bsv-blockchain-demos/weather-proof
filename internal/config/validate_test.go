@@ -152,13 +152,38 @@ func TestRule5RejectsAURLWithAPath(t *testing.T) {
 	}
 }
 
+// TestRule5AcceptsABareHTTPSHost covers BOTH accepted spellings, with and
+// without the trailing slash, plus a real path as the negative control in the
+// same table — a table asserting only "these are accepted" is satisfied by a
+// rule that accepts everything.
+//
+// The trailing-slash case is here because rule 5's own doc comment says "no
+// path beyond /" while the code used to reject "https://host/": a plausible
+// WALLET_STORAGE_URL (a copy out of a browser address bar) failed closed with
+// a message reading as though a path had been supplied.
 func TestRule5AcceptsABareHTTPSHost(t *testing.T) {
-	c := validConfig(t)
-	c.WalletStorageURL = "https://storage.example"
+	cases := []struct {
+		url    string
+		accept bool
+	}{
+		{url: "https://storage.example", accept: true},
+		{url: "https://storage.example/", accept: true},
+		{url: "https://storage.example/v1", accept: false},
+		{url: "https://storage.example//", accept: false},
+	}
 
-	// SubDeposit requires rule 5 but never rules 8/10/12/13.
-	if err := config.Validate(c, config.SubDeposit); err != nil {
-		t.Fatalf("Validate() = %v, want nil", err)
+	for _, tc := range cases {
+		c := validConfig(t)
+		c.WalletStorageURL = tc.url
+
+		// SubDeposit requires rule 5 but never rules 8/10/12/13.
+		err := config.Validate(c, config.SubDeposit)
+		if tc.accept && err != nil {
+			t.Errorf("Validate() with %q = %v, want nil", tc.url, err)
+		}
+		if !tc.accept && (err == nil || !strings.Contains(err.Error(), "WALLET_STORAGE_URL")) {
+			t.Errorf("Validate() with %q = %v, want an error naming WALLET_STORAGE_URL", tc.url, err)
+		}
 	}
 }
 
