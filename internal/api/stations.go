@@ -33,7 +33,7 @@ func handleStationList(sts store.StationStore, now func() time.Time, pollRate ti
 				writeError(w, r, http.StatusBadRequest, badReq.Error())
 				return
 			}
-			writeError(w, r, http.StatusInternalServerError, msgInternal)
+			writeErrorCause(w, r, http.StatusInternalServerError, msgInternal, searchErr)
 			return
 		}
 
@@ -45,15 +45,13 @@ func handleStationList(sts store.StationStore, now func() time.Time, pollRate ti
 
 		stats, statsErr := sts.Stats(r.Context())
 		if statsErr != nil {
-			httpStatus, msg := statusForStoreError(statsErr)
-			writeError(w, r, httpStatus, msg)
+			writeStoreError(w, r, statsErr)
 			return
 		}
 
 		stations, total, listErr := sts.List(r.Context(), f)
 		if listErr != nil {
-			httpStatus, msg := statusForStoreError(listErr)
-			writeError(w, r, httpStatus, msg)
+			writeStoreError(w, r, listErr)
 			return
 		}
 
@@ -90,7 +88,7 @@ func handleStationDetail(sts store.StationStore, now func() time.Time, pollRate 
 				writeError(w, r, http.StatusBadRequest, badReq.Error())
 				return
 			}
-			writeError(w, r, http.StatusInternalServerError, msgInternal)
+			writeErrorCause(w, r, http.StatusInternalServerError, msgInternal, idErr)
 			return
 		}
 
@@ -100,8 +98,7 @@ func handleStationDetail(sts store.StationStore, now func() time.Time, pollRate 
 				writeError(w, r, http.StatusNotFound, msgStationNotFound)
 				return
 			}
-			httpStatus, msg := statusForStoreError(getErr)
-			writeError(w, r, httpStatus, msg)
+			writeStoreError(w, r, getErr)
 			return
 		}
 

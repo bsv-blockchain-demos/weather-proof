@@ -83,15 +83,13 @@ func handleOps(recs store.RecordStore, sts store.StationStore, h *Hub) http.Hand
 	return func(w http.ResponseWriter, r *http.Request) {
 		snap, snapErr := recs.Snapshot(r.Context())
 		if snapErr != nil {
-			httpStatus, msg := statusForStoreError(snapErr)
-			writeError(w, r, httpStatus, msg)
+			writeStoreError(w, r, snapErr)
 			return
 		}
 
 		stats, statsErr := sts.Stats(r.Context())
 		if statsErr != nil {
-			httpStatus, msg := statusForStoreError(statsErr)
-			writeError(w, r, httpStatus, msg)
+			writeStoreError(w, r, statsErr)
 			return
 		}
 
@@ -121,6 +119,11 @@ func handleOps(recs store.RecordStore, sts store.StationStore, h *Hub) http.Hand
 // report different sseClients counts.
 func NewOpsRouter(d Deps) http.Handler {
 	mux := http.NewServeMux()
+
+	// Same nil-Logger coercion as NewRouter, for the same reason: withRecover
+	// and withWriteDeadline both dereference it, the second one inside the
+	// deferred recovery.
+	d.Logger = orDefaultLogger(d.Logger)
 
 	hub := d.Hub
 	if hub == nil {

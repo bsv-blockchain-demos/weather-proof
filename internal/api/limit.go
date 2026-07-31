@@ -68,10 +68,17 @@ const msgNotImplemented = "not implemented"
 // at the registration site because the limiter tests drive the same paths a
 // dozen times each and goconst fires at ten repeats of a string.
 const (
-	pathHealth   = "/api/health"
-	pathReady    = "/api/ready"
-	pathEvents   = "/api/events"
-	pathVerify   = "/api/verify"
+	pathHealth = "/api/health"
+	pathReady  = "/api/ready"
+	pathEvents = "/api/events"
+	pathVerify = "/api/verify"
+
+	// pathProof carries a wildcard segment because the route it registers does:
+	// it is a const like its siblings so B3, which is instructed to replace the
+	// handler on exactly that registration line, edits a named pattern rather
+	// than a bare literal that no test can reference.
+	pathProof = "/api/proof/{txid}"
+
 	pathWeather  = "/api/weather"
 	pathStations = "/api/stations"
 	pathOps      = "/api/ops"

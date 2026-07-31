@@ -33,7 +33,7 @@ func handleWeatherList(recs store.RecordStore) http.HandlerFunc {
 				writeError(w, r, http.StatusBadRequest, badReq.Error())
 				return
 			}
-			writeError(w, r, http.StatusInternalServerError, msgInternal)
+			writeErrorCause(w, r, http.StatusInternalServerError, msgInternal, statusErr)
 			return
 		}
 
@@ -44,7 +44,7 @@ func handleWeatherList(recs store.RecordStore) http.HandlerFunc {
 				writeError(w, r, http.StatusBadRequest, badReq.Error())
 				return
 			}
-			writeError(w, r, http.StatusInternalServerError, msgInternal)
+			writeErrorCause(w, r, http.StatusInternalServerError, msgInternal, stationErr)
 			return
 		}
 
@@ -57,8 +57,7 @@ func handleWeatherList(recs store.RecordStore) http.HandlerFunc {
 
 		records, total, listErr := recs.List(r.Context(), f)
 		if listErr != nil {
-			httpStatus, msg := statusForStoreError(listErr)
-			writeError(w, r, httpStatus, msg)
+			writeStoreError(w, r, listErr)
 			return
 		}
 
@@ -93,7 +92,7 @@ func handleWeatherDetail(recs store.RecordStore) http.HandlerFunc {
 				writeError(w, r, http.StatusBadRequest, badReq.Error())
 				return
 			}
-			writeError(w, r, http.StatusInternalServerError, msgInternal)
+			writeErrorCause(w, r, http.StatusInternalServerError, msgInternal, idErr)
 			return
 		}
 
@@ -103,8 +102,7 @@ func handleWeatherDetail(recs store.RecordStore) http.HandlerFunc {
 				writeError(w, r, http.StatusNotFound, msgWeatherNotFound)
 				return
 			}
-			httpStatus, msg := statusForStoreError(getErr)
-			writeError(w, r, httpStatus, msg)
+			writeStoreError(w, r, getErr)
 			return
 		}
 

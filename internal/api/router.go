@@ -44,6 +44,16 @@ type Deps struct {
 	Hub *Hub
 }
 
+// orDefaultLogger coerces a nil logger to slog.Default(), the same coercion
+// NewHub does. It is one function rather than two inline nil checks so a third
+// constructor cannot pick a different fallback.
+func orDefaultLogger(log *slog.Logger) *slog.Logger {
+	if log == nil {
+		return slog.Default()
+	}
+	return log
+}
+
 // onlyGET wraps a handler so that any method other than GET answers the JSON
 // 405 shape with an Allow header, instead of falling through to the
 // handler. This exists because net/http.ServeMux's own method-mismatch 405
@@ -106,6 +116,14 @@ func methodNotAllowedJSON(w http.ResponseWriter, r *http.Request, allowed string
 func NewRouter(d Deps) http.Handler {
 	mux := http.NewServeMux()
 
+	// A nil Logger is coerced, exactly as NewHub coerces one and for the same
+	// reason: this package already documents that a partially-filled Deps is
+	// supported (see the Hub field), and Logger was the one field that broke
+	// that contract. withRecover dereferences the logger INSIDE the deferred
+	// recovery, so a nil there turns the first panic in any handler into a
+	// second panic during recovery — no 500, no log, connection aborted.
+	d.Logger = orDefaultLogger(d.Logger)
+
 	lim := newLimiters(d.ProofRateLimitPerMin, d.Now)
 	res := ratelimit.Resolver{Trusted: d.Trusted}
 
@@ -146,7 +164,7 @@ func NewRouter(d Deps) http.Handler {
 	// tested now because a scope wired later is a scope that ships unlimited.
 	// B3 replaces handleNotImplemented at these two lines.
 	mux.Handle(pathVerify, withLimit(lim.verify, res)(onlyMethod(http.MethodPost, handleNotImplemented)))
-	mux.Handle("/api/proof/{txid}", withLimit(lim.proof, res)(onlyGET(handleNotImplemented)))
+	mux.Handle(pathProof, withLimit(lim.proof, res)(onlyGET(handleNotImplemented)))
 
 	// ── 6. The four read routes and their {$} twins, all on the general scope.
 	general := withLimit(lim.general, res)
