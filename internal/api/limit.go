@@ -173,18 +173,3 @@ func secondsCeil(d time.Duration) string {
 func handleNotImplemented(w http.ResponseWriter, r *http.Request) {
 	writeError(w, r, http.StatusNotImplemented, msgNotImplemented)
 }
-
-// handleProbeStandIn is the stand-in for /api/health and /api/ready, whose real
-// handlers are Task 19's. It exists so the EXEMPTION SEAM — the two patterns
-// registered outside every limiter — is testable now rather than being an
-// aspiration Task 19 has to remember.
-//
-// It answers 501, deliberately NOT 200: a stand-in must never answer a probe
-// affirmatively. A liveness probe that reports healthy without checking
-// anything, or a readiness probe that reports ready without pinging the store,
-// is the failure mode worth avoiding here; 501 fails loudly and cannot be
-// mistaken for a live probe. Task 19 replaces this handler at the registration
-// site marked in NewRouter, keeping the position in the chain.
-func handleProbeStandIn(w http.ResponseWriter, r *http.Request) {
-	writeError(w, r, http.StatusNotImplemented, msgNotImplemented)
-}

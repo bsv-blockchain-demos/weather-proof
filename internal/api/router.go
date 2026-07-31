@@ -112,16 +112,14 @@ func NewRouter(d Deps) http.Handler {
 	// ── 1-2. THE EXEMPTION SEAM. Everything registered in this block is
 	// registered WITHOUT withLimit and must stay that way: a liveness probe
 	// that can be rate-limited turns a traffic spike into a pod restart (spec
-	// §6.0 control 3). handleProbeStandIn is Task 19's replacement site — swap
-	// the handler here, do not add a second registration and do not move these
-	// two lines below the limited routes. /api/ops is not in this list at all:
-	// it lives on the ops server (Task 20/21) and is therefore exempt by
-	// construction, which is stronger than exempt by registration order.
+	// §6.0 control 3). /api/ops is not in this list at all: it lives on the ops
+	// server (Task 20/21) and is therefore exempt by construction, which is
+	// stronger than exempt by registration order.
 	//
 	// Pinned by TestHealthAndReadyAreNeverLimited and
 	// TestHealthAndReadyDoNotConsumeAnyBucket.
-	mux.HandleFunc(pathHealth, onlyGET(handleProbeStandIn))
-	mux.HandleFunc(pathReady, onlyGET(handleProbeStandIn))
+	mux.HandleFunc(pathHealth, onlyGET(handleHealth(d.Now)))
+	mux.HandleFunc(pathReady, onlyGET(handleReady(d.Store.Health)))
 
 	// ── 3. SSE. Its own scope, with markSSEExempt INSIDE withLimit so the
 	// LIMITER's 429 — written before the marker ever runs — still gets the

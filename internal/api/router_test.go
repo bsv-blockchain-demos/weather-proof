@@ -356,6 +356,10 @@ func TestRouterPatternInventoryIsExactlyTheExpectedSet(t *testing.T) {
 		"/api/weather/" + routerSeededWeatherID,
 		"/api/stations", "/api/stations/",
 		"/api/stations/42",
+		// /api/health and /api/ready have real Task 19 handlers now, and
+		// testDeps' fake store answers Ping with a nil error, so both are a
+		// straightforward 2xx alongside the read routes.
+		pathHealth, pathReady,
 	}
 	for _, target := range registered {
 		rec := doGet(t, h, target)
@@ -369,7 +373,6 @@ func TestRouterPatternInventoryIsExactlyTheExpectedSet(t *testing.T) {
 	// that its limiter scope is live. A 404 here would mean an unlimited scope
 	// shipped.
 	placeholders := []string{
-		pathHealth, pathReady,
 		"/api/proof/" + strings.Repeat("ab", 32),
 	}
 	for _, target := range placeholders {
