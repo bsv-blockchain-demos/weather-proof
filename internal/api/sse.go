@@ -387,18 +387,30 @@ func handleEvents(h *Hub, sts store.StationStore, res ratelimit.Resolver, log *s
 // json.Marshal, NOT json.Encoder.Encode: Encode appends a newline of its own,
 // which would end the data line early and hand the client an event whose
 // payload is an empty string — parsed inside a bare catch, so silently.
+//
+// ONE value, ONE write: the prefix, payload and suffix reach w together, so no
+// other writer can interleave between the event name and its data line.
+//
+// A CONCATENATION rather than the `make([]byte, 0, len(prefix)+len(payload)+
+// len(suffix))` plus three appends this replaces, and the reason is that two
+// gates disagreed about that line. CodeQL's go/allocation-size-overflow flags an
+// allocation size derived from an arithmetic sum as HIGH severity, while
+// golangci's prealloc demands precisely that sum. The overflow CodeQL describes
+// is not reachable — a statsDTO is four scalar fields, so len(payload) is tens
+// of bytes, and three int lengths cannot sum past a 64-bit int — but the
+// pre-sizing was only ever a micro-optimisation on a path that runs once per
+// subscriber per broadcast. Concatenating satisfies both gates on their own
+// terms and needs no suppression, which a dismissal would have required
+// re-arguing on the next CodeQL version bump.
 func writeStatsFrame(w io.Writer, rc *http.ResponseController, s statsDTO) error {
 	payload, marshalErr := json.Marshal(s)
 	if marshalErr != nil {
 		return marshalErr
 	}
 
-	frame := make([]byte, 0, len(sseFramePrefix)+len(payload)+len(sseFrameSuffix))
-	frame = append(frame, sseFramePrefix...)
-	frame = append(frame, payload...)
-	frame = append(frame, sseFrameSuffix...)
+	frame := sseFramePrefix + string(payload) + sseFrameSuffix
 
-	if _, writeErr := w.Write(frame); writeErr != nil {
+	if _, writeErr := io.WriteString(w, frame); writeErr != nil {
 		return writeErr
 	}
 	// A flush failure ends the stream: a client that cannot be flushed to is
