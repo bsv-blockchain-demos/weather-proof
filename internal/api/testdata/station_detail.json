@@ -1,0 +1,11 @@
+{
+  "stationId": 5001,
+  "name": "Brix Station",
+  "location": "Bristol Docks",
+  "status": "online",
+  "lastReading": "2026-04-17T15:30:00.000Z",
+  "lastTemp": 21.5,
+  "lastConditions": "Clear",
+  "txRecords": 11,
+  "lastBlockHeight": 879100
+}
