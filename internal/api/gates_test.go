@@ -34,7 +34,6 @@ import (
 	"path"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -444,37 +443,119 @@ func TestNoSourceFileInAPIReferencesTheBannedHttprateHelpers(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Gate 6 — no source line formats an error into a response body.
+// Gate 6 — no source in this package formats an error into a response body.
 //
-// Mechanism: a line scan over this package's embedded source for a line
-// carrying both err.Error() and one of the write helpers.
-// Mutation: change writeError's 500 call site to pass err.Error() → RED.
-// Runtime siblings: Task 6's TestStatusForStoreErrorNeverEchoesTheErrorText,
-// plus Task 7's and Task 20's opaque-500 tests.
-// STATED AT THE GATE: this scan is a HEURISTIC and is explicitly NOT the
-// load-bearing check. A single-line pattern cannot evaluate runtime semantics
-// — a two-line version of the same bug walks straight past it — and it is kept
-// only because those three runtime tests exist. That was B1's lesson.
+// Mechanism: an AST walk (not a line scan) over this package's embedded source.
+// Two shapes are flagged:
+//  1. a CallExpr to any WRITE SINK whose argument subtree contains a call to
+//     .Error() — at any nesting depth, so fmt.Sprintf("…: %s", listErr.Error())
+//     inside a sink argument is caught too, and the call may span any number of
+//     lines because an AST has no lines;
+//  2. any return statement inside statusForStoreError, which is the one
+//     function that produces the client-safe message from an error and whose
+//     `return http.StatusInternalServerError, err.Error()` carries no sink
+//     token at all.
+//
+// WHY IT IS AN AST WALK: the line-oriented predecessor was evaded twice, both
+// verified. A gofmt-clean MULTI-LINE sink call (each argument on its own line)
+// put searchErr.Error() on a line with no sink token, and shape 2 has no sink
+// token on any line. A gate that reads as structural while being textual is
+// worse than an honest heuristic, so this is now actually structural.
+//
+// Mutations, all proven RED under the FULL package suite in a scratch copy
+// outside the repository: (a) the exact multi-line evasion the review verified
+// against the predecessor — writeError(\n w, r,\n http.StatusInternalServerError,
+// \n searchErr.Error(),\n) in stations.go, gofmt-clean; (b) statusForStoreError's
+// default branch returning err.Error(); (c) renaming statusForStoreError, which
+// trips the liveness check at the end rather than passing vacuously.
+//
+// KNOWN LIMITS, stated rather than overclaimed. This gate matches sinks and
+// receivers BY NAME, because it does not run go/types:
+//   - The `badReq` exemption below is by identifier. An upstream error
+//     deliberately bound to a variable named badReq and passed to a sink as
+//     .Error() would pass this gate. Nothing structural distinguishes them
+//     without type information.
+//   - An error laundered through a local string variable first
+//     (msg := listErr.Error(); writeError(…, msg)) is not caught: that needs
+//     dataflow, not a syntax walk.
+// Both are covered behaviorally by the runtime siblings — Task 6's
+// TestStatusForStoreErrorNeverEchoesTheErrorText, Task 7's and Task 20's
+// opaque-500 tests, and the forbidden-substring assertions in params_test.go
+// and middleware_test.go, which assert on the actual response bytes.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// writeSinkIdents are the package-level write helpers, matched as a bare
+// identifier at the call. writeSinkSelectors are matched on the SELECTOR name
+// only, so w.Write, rw.Write and fmt.Fprintf all match regardless of the
+// receiver's spelling — the predecessor's "w.Write" literal missed a renamed
+// receiver.
+var (
+	writeSinkIdents = map[string]bool{
+		"writeJSON":       true,
+		"writeError":      true,
+		"writeErrorCause": true,
+		"writeStoreError": true,
+	}
+	writeSinkSelectors = map[string]bool{
+		"Write":       true,
+		"Fprint":      true,
+		"Fprintf":     true,
+		"Fprintln":    true,
+		"WriteString": true,
+	}
+)
+
+// errTextExemptReceivers are the receivers whose .Error() is a hand-written
+// CLIENT message rather than an upstream error's text. badRequestError is
+// constructed in params.go from a fixed string per parameter ("invalid status"),
+// carries nothing from a driver, and spec §13.6 pins those strings verbatim in
+// the 400 body — so passing it to a sink is correct and must not be flagged.
+var errTextExemptReceivers = map[string]bool{"badReq": true}
+
+// callsErrorText reports whether the subtree contains a call to .Error() on a
+// non-exempt receiver.
+func callsErrorText(n ast.Node) bool {
+	found := false
+	ast.Inspect(n, func(node ast.Node) bool {
+		call, isCall := node.(*ast.CallExpr)
+		if !isCall {
+			return true
+		}
+		sel, isSel := call.Fun.(*ast.SelectorExpr)
+		if !isSel || sel.Sel.Name != "Error" || len(call.Args) != 0 {
+			return true
+		}
+		if recv, isIdent := sel.X.(*ast.Ident); isIdent && errTextExemptReceivers[recv.Name] {
+			return true
+		}
+		found = true
+		return false
+	})
+	return found
+}
+
+// writeSinkName returns the sink name a CallExpr targets, or "".
+func writeSinkName(call *ast.CallExpr) string {
+	switch fun := call.Fun.(type) {
+	case *ast.Ident:
+		if writeSinkIdents[fun.Name] {
+			return fun.Name
+		}
+	case *ast.SelectorExpr:
+		if writeSinkSelectors[fun.Sel.Name] {
+			return fun.Sel.Name
+		}
+	}
+	return ""
+}
+
 func TestNoSourceFileInAPIFormatsAnErrorIntoAResponseBody(t *testing.T) {
-	writeSinks := []string{"writeJSON", "writeError", "w.Write", "Fprint"}
-
-	// The needle is a PATTERN, not the literal "err.Error()" the brief named.
-	// Measured: the brief's literal is very nearly unfailable in this package,
-	// because govet's shadow rule forces every error binding to be named after
-	// its operation — listErr, searchErr, encodeErr — so the realistic
-	// regression writes searchErr.Error(), which the literal does not match.
-	// The pattern matches any identifier ending in err/Err. badReq.Error() on
-	// a 400 path deliberately does NOT match: a badRequestError's text is a
-	// hand-written client message, not an upstream error.
-	errText := regexp.MustCompile(`[A-Za-z0-9_]*[Ee]rr\.Error\(\)`)
-
 	entries, readDirErr := packageSourceFS.ReadDir(".")
 	if readDirErr != nil {
 		t.Fatalf("read embedded package dir: %v", readDirErr)
 	}
 
+	fset := token.NewFileSet()
 	scanned := 0
 	for _, entry := range entries {
 		if entry.IsDir() || strings.HasSuffix(entry.Name(), "_test.go") {
@@ -484,26 +565,105 @@ func TestNoSourceFileInAPIFormatsAnErrorIntoAResponseBody(t *testing.T) {
 		if readErr != nil {
 			t.Fatalf("read embedded file %s: %v", entry.Name(), readErr)
 		}
+		// Parsed from the embedded bytes, so the walk sees exactly the source
+		// that was compiled into this test binary and no os.ReadFile at a
+		// computed path is involved (gosec G304).
+		file, parseErr := parser.ParseFile(fset, entry.Name(), src, 0)
+		if parseErr != nil {
+			t.Fatalf("parse embedded file %s: %v", entry.Name(), parseErr)
+		}
 		scanned++
-		for i, line := range strings.Split(string(src), "\n") {
-			if !errText.MatchString(line) {
-				continue
-			}
-			for _, sink := range writeSinks {
-				if strings.Contains(line, sink) {
-					t.Errorf("%s:%d formats an error into a response body via %s: %s\n"+
+
+		ast.Inspect(file, func(node ast.Node) bool {
+			switch typed := node.(type) {
+			case *ast.CallExpr:
+				sink := writeSinkName(typed)
+				if sink == "" {
+					return true
+				}
+				for _, arg := range typed.Args {
+					if !callsErrorText(arg) {
+						continue
+					}
+					t.Errorf("%s:%d formats an error into a response body via %s\n"+
 						"a *pgconn.PgError's Error() carries the SQLSTATE, Detail, Hint, ConstraintName, "+
 						"ColumnName and TableName — none of which may reach a client",
-						entry.Name(), i+1, sink, strings.TrimSpace(line))
+						entry.Name(), fset.Position(typed.Pos()).Line, sink)
+					return true
+				}
+			case *ast.FuncDecl:
+				if typed.Name.Name != statusMapperName || typed.Body == nil {
+					return true
+				}
+				for _, stmt := range typed.Body.List {
+					ast.Inspect(stmt, func(inner ast.Node) bool {
+						ret, isReturn := inner.(*ast.ReturnStmt)
+						if !isReturn {
+							return true
+						}
+						for _, result := range ret.Results {
+							if callsErrorText(result) {
+								t.Errorf("%s:%d %s returns an error's text as the client-safe message; "+
+									"its default branch must return the msgInternal constant",
+									entry.Name(), fset.Position(ret.Pos()).Line, statusMapperName)
+							}
+						}
+						return true
+					})
 				}
 			}
-		}
+			return true
+		})
 	}
 
 	const minScanned = 8
 	if scanned < minScanned {
 		t.Fatalf("scanned only %d non-test files, want at least %d", scanned, minScanned)
 	}
+
+	// Liveness: the FuncDecl arm above is silently vacuous if the function is
+	// ever renamed, which is exactly B1's unfailable-gate shape.
+	if !funcExistsInPackageSource(t, statusMapperName) {
+		t.Fatalf("%s not found in this package's source: the return-path arm of this gate is scanning nothing",
+			statusMapperName)
+	}
+}
+
+// statusMapperName is the one function that turns an error into a status and a
+// client-safe message. Named once, so the gate's return-path arm and its
+// liveness check cannot drift apart.
+const statusMapperName = "statusForStoreError"
+
+// funcExistsInPackageSource reports whether the package declares a function of
+// this name, so a gate that keys on a function name fails loudly on a rename
+// instead of passing vacuously.
+func funcExistsInPackageSource(t *testing.T, name string) bool {
+	t.Helper()
+
+	entries, readDirErr := packageSourceFS.ReadDir(".")
+	if readDirErr != nil {
+		t.Fatalf("read embedded package dir: %v", readDirErr)
+	}
+	fset := token.NewFileSet()
+	for _, entry := range entries {
+		if entry.IsDir() || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		src, readErr := packageSourceFS.ReadFile(entry.Name())
+		if readErr != nil {
+			t.Fatalf("read embedded file %s: %v", entry.Name(), readErr)
+		}
+		file, parseErr := parser.ParseFile(fset, entry.Name(), src, 0)
+		if parseErr != nil {
+			t.Fatalf("parse embedded file %s: %v", entry.Name(), parseErr)
+		}
+		for _, decl := range file.Decls {
+			if fn, isFunc := decl.(*ast.FuncDecl); isFunc && fn.Name.Name == name {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -511,14 +671,20 @@ func TestNoSourceFileInAPIFormatsAnErrorIntoAResponseBody(t *testing.T) {
 //
 // Mechanism: the embedded testdata directory versus a hardcoded name list;
 // every file must be non-empty and must parse as JSON.
-// Mutation: add a seventh golden, or delete one → RED (a deletion is caught at
-// compile time by the embed pattern as well).
+// Mutation: add a seventh golden, or delete one → RED. Both were observed at
+// RUN TIME, not at compile time: the //go:embed pattern is testdata/*.json, so
+// deleting ONE golden still matches the remaining five and the package compiles
+// fine. (Only deleting ALL of them makes the pattern match nothing, which is
+// the case the compiler rejects.) The earlier claim that a deletion is "caught
+// at compile time by the embed pattern as well" was wrong; this test is the
+// only gate on a single deletion.
 // Runtime sibling: each endpoint's own golden test.
 // WHAT THIS GATE DOES NOT DO: detect a LAUNDERED golden — one regenerated
-// together with an unintended encoder change, so the test passes against new,
-// wrong bytes. That hole is closed by go.yml's "Golden file is not stale or
-// laundered" step, which this task extends to internal/api/testdata/. Do not
-// read this gate as covering it.
+// together with an unintended encoder change and committed, so the test passes
+// against new, wrong bytes. go.yml's "Goldens are not stale" step does not close
+// that hole either (it catches a stale golden, which is a different thing); the
+// control is a human reviewing the golden diff in the PR. Do not read this gate
+// as covering it.
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestGoldenFilesAreNotStale(t *testing.T) {
@@ -557,7 +723,7 @@ func TestGoldenFilesAreNotStale(t *testing.T) {
 
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("golden set on disk is %v, want exactly %v; a new endpoint's golden must be added to this "+
-			"list AND to go.yml's regenerate-and-diff step, or it ships with no laundering gate", got, want)
+			"list AND to go.yml's regenerate-and-diff step, or it ships with no staleness gate", got, want)
 	}
 }
 
