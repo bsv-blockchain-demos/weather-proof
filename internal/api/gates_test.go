@@ -34,6 +34,7 @@ import (
 	"path"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -467,7 +468,10 @@ func TestNoSourceFileInAPIReferencesTheBannedHttprateHelpers(t *testing.T) {
 // against the predecessor — writeError(\n w, r,\n http.StatusInternalServerError,
 // \n searchErr.Error(),\n) in stations.go, gofmt-clean; (b) statusForStoreError's
 // default branch returning err.Error(); (c) renaming statusForStoreError, which
-// trips the liveness check at the end rather than passing vacuously.
+// trips the liveness check at the end rather than passing vacuously; (d) the
+// re-review's fmt.Sprintf("%v", searchErr) passed to a sink, which carries no
+// .Error() token at all and was GREEN against the first AST version of this
+// gate — the fmt.Sprint* arm below exists for it.
 //
 // KNOWN LIMITS, stated rather than overclaimed. This gate matches sinks and
 // receivers BY NAME, because it does not run go/types:
@@ -478,6 +482,11 @@ func TestNoSourceFileInAPIReferencesTheBannedHttprateHelpers(t *testing.T) {
 //   - An error laundered through a local string variable first
 //     (msg := listErr.Error(); writeError(…, msg)) is not caught: that needs
 //     dataflow, not a syntax walk.
+//   - The fmt.Sprint* arm matches an OPERAND IDENT whose name ends in err/Err,
+//     which is this package's mandatory naming convention (govet shadow) but is
+//     still a name match: fmt.Sprintf("%v", e) with an error bound to a name
+//     that does not end in err/Err escapes, as does Sprintf over a struct FIELD
+//     or a call result rather than a bare ident.
 // Both are covered behaviorally by the runtime siblings — Task 6's
 // TestStatusForStoreErrorNeverEchoesTheErrorText, Task 7's and Task 20's
 // opaque-500 tests, and the forbidden-substring assertions in params_test.go
@@ -512,8 +521,22 @@ var (
 // the 400 body — so passing it to a sink is correct and must not be flagged.
 var errTextExemptReceivers = map[string]bool{"badReq": true}
 
-// callsErrorText reports whether the subtree contains a call to .Error() on a
-// non-exempt receiver.
+// sprintFuncs are the fmt formatters that turn an error into a string WITHOUT
+// ever writing .Error(). fmt.Sprintf("%v", searchErr) is byte-identical in the
+// body to searchErr.Error() and was a live hole in this gate: gofmt-clean,
+// single line, no .Error() token and no laundering variable.
+var sprintFuncs = map[string]bool{"Sprintf": true, "Sprint": true, "Sprintln": true}
+
+// errNamedIdent matches an identifier that names an error by this package's
+// mandatory convention: govet's shadow rule forces every inner error binding to
+// be named after its operation, so the realistic regression formats listErr,
+// searchErr or snapErr. This is the predecessor regex's heuristic, now applied
+// to an AST operand rather than to a line of text.
+var errNamedIdent = regexp.MustCompile(`[Ee]rr$`)
+
+// callsErrorText reports whether the subtree contains either shape that puts an
+// upstream error's text into a string: a call to .Error() on a non-exempt
+// receiver, or an fmt.Sprint* call over an error-named operand.
 func callsErrorText(n ast.Node) bool {
 	found := false
 	ast.Inspect(n, func(node ast.Node) bool {
@@ -522,14 +545,35 @@ func callsErrorText(n ast.Node) bool {
 			return true
 		}
 		sel, isSel := call.Fun.(*ast.SelectorExpr)
-		if !isSel || sel.Sel.Name != "Error" || len(call.Args) != 0 {
+		if !isSel {
 			return true
 		}
-		if recv, isIdent := sel.X.(*ast.Ident); isIdent && errTextExemptReceivers[recv.Name] {
+		if sel.Sel.Name == "Error" && len(call.Args) == 0 {
+			if recv, isIdent := sel.X.(*ast.Ident); isIdent && errTextExemptReceivers[recv.Name] {
+				return true
+			}
+			found = true
+			return false
+		}
+		// fmt.Sprint*(…, someErr, …) — any operand, any verb, so %v, %s and a
+		// bare Sprint are all covered. The receiver is not required to be the
+		// ident "fmt": a dot-import or an alias would still match on the
+		// selector, and matching more widely here only costs a false positive
+		// on a hypothetical non-fmt Sprintf, which a rename fixes.
+		if !sprintFuncs[sel.Sel.Name] {
 			return true
 		}
-		found = true
-		return false
+		for _, arg := range call.Args {
+			ident, isIdent := arg.(*ast.Ident)
+			if !isIdent || errTextExemptReceivers[ident.Name] {
+				continue
+			}
+			if errNamedIdent.MatchString(ident.Name) {
+				found = true
+				return false
+			}
+		}
+		return true
 	})
 	return found
 }
