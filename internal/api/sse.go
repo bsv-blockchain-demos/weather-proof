@@ -1,9 +1,16 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
+	"net/http"
 	"sync"
+	"time"
+
+	"github.com/bsv-blockchain-demos/weather-proof/internal/ratelimit"
+	"github.com/bsv-blockchain-demos/weather-proof/internal/store"
 )
 
 // ErrHubFull and ErrPerIPFull are the two refusal reasons. They are distinct
@@ -228,4 +235,174 @@ func (h *Hub) Clients() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return len(h.clients)
+}
+
+// The SSE wire literals. Every one is asserted verbatim by the tests because
+// every one is load-bearing: the client registers a listener for the NAMED
+// event stats_update (spec §13.7), and a default/unnamed message event is
+// ignored entirely — the Live dot would stay green (onopen fires) while the
+// stats never update.
+const (
+	sseEventName      = "stats_update"
+	sseHeartbeat      = ":ping\n\n"
+	sseContentType    = "text/event-stream"
+	sseCacheControl   = "no-cache"
+	sseConnection     = "keep-alive"
+	sseAccelBuffer    = "X-Accel-Buffering"
+	sseAccelBufferOff = "no"
+)
+
+// The two header names the stream sets that no other response path sets.
+// headerContentType lives in respond.go and is reused here.
+const (
+	headerCacheControl = "Cache-Control"
+	headerConnection   = "Connection"
+)
+
+// sseFramePrefix is everything before the JSON payload of a stats_update
+// frame. It is composed FROM sseEventName rather than pasted, so changing the
+// event name changes the wire — which is what makes the name's mutation
+// observable in exactly one place.
+//
+// Note the single space after each colon and the single newline between the
+// two field lines: `event:stats_update` (no space) is a different field value
+// to EventSource, and a second newline here would terminate the frame before
+// its data line.
+const sseFramePrefix = "event: " + sseEventName + "\ndata: "
+
+// sseFrameSuffix terminates the frame. The BLANK line is what dispatches the
+// event; without it the client buffers the fields forever and never fires the
+// listener.
+const sseFrameSuffix = "\n\n"
+
+// The two refusal bodies. They are DISTINCT from msgTooManyRequests (the
+// limiter's 429 message) on purpose: the per-IP concurrency cap and the
+// per-minute new-stream rate limit both answer 429 on the same path, and a
+// shared message would make a test — and an operator reading a log — unable
+// to tell which of the two refused.
+const (
+	msgTooManyStreams        = "Too many concurrent streams, please try again later"
+	msgStreamCapacityReached = "Stream capacity reached, please try again later"
+)
+
+// sseHeartbeatInterval is the comment-frame period. Cloudflare tunnels drop
+// idle streams, so this is not decoration. It is a package var rather than a
+// const so the tests can shorten it and restore it with t.Cleanup — a real
+// 30-second wait in a unit test is how a suite becomes something nobody runs.
+var sseHeartbeatInterval = 30 * time.Second
+
+// handleEvents serves GET /api/events (spec §13.7).
+//
+// The heartbeat is an SSE COMMENT (":ping\n\n") and never a stats_update: the
+// client's handler does JSON.parse inside a bare `catch {}`, so a malformed
+// stats_update is swallowed silently and a heartbeat shaped like one would be
+// invisible breakage.
+//
+// It sets NO write deadline — it is registered behind markSSEExempt — and
+// relies on r.Context().Done() for cleanup. It calls Flush after EVERY write.
+//
+// A failing Stats read does NOT refuse the connection: the stream's job is to
+// deliver FUTURE updates, and refusing to open it because one stats read
+// failed converts a transient DB blip into a dead Live dot until the user
+// reloads the page. The first push is omitted and logged at WARN instead.
+// Pinned by TestEventsStatsFailureStillOpensTheStream.
+func handleEvents(h *Hub, sts store.StationStore, res ratelimit.Resolver) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ch, unregister, regErr := h.Register(res.Key(r))
+		if regErr != nil {
+			// The hub returns a nil channel AND a nil unregister func on
+			// refusal, so there is deliberately nothing to defer here. Pinned
+			// by TestRegisterRefusalReturnsANilChannelAndANilUnregister.
+			switch {
+			case errors.Is(regErr, ErrHubFull):
+				writeError(w, r, http.StatusServiceUnavailable, msgStreamCapacityReached)
+			case errors.Is(regErr, ErrPerIPFull):
+				writeError(w, r, http.StatusTooManyRequests, msgTooManyStreams)
+			default:
+				slog.ErrorContext(r.Context(), "sse register failed", "error", regErr)
+				writeError(w, r, http.StatusInternalServerError, msgInternal)
+			}
+			return
+		}
+		defer unregister()
+
+		header := w.Header()
+		header.Set(headerContentType, sseContentType)
+		header.Set(headerCacheControl, sseCacheControl)
+		header.Set(headerConnection, sseConnection)
+		header.Set(sseAccelBuffer, sseAccelBufferOff)
+		w.WriteHeader(http.StatusOK)
+
+		// Flush the header block immediately: EventSource fires onopen off the
+		// response head, and the frontend's Live dot goes green there.
+		rc := http.NewResponseController(w)
+		if flushErr := rc.Flush(); flushErr != nil {
+			return
+		}
+
+		// The FIRST push, on connect, so the tiles populate without waiting a
+		// broadcast interval (spec §13.7).
+		if first, statsErr := sts.Stats(r.Context()); statsErr != nil {
+			slog.WarnContext(r.Context(), "sse first stats push omitted",
+				"request_id", requestIDFrom(r.Context()), "error", statsErr)
+		} else if frameErr := writeStatsFrame(w, rc, toStats(first)); frameErr != nil {
+			return
+		}
+
+		ticker := time.NewTicker(sseHeartbeatInterval)
+		defer ticker.Stop()
+
+		ctx := r.Context()
+		for {
+			select {
+			case s := <-ch:
+				// NEVER `range ch`: the hub never closes a client channel (see
+				// its shutdown contract), so a range would block forever after
+				// the client is gone. ctx.Done below is the only termination
+				// signal.
+				if frameErr := writeStatsFrame(w, rc, s); frameErr != nil {
+					return
+				}
+			case <-ticker.C:
+				if pingErr := writeHeartbeat(w, rc); pingErr != nil {
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
+}
+
+// writeStatsFrame writes one complete stats_update frame and flushes it.
+//
+// json.Marshal, NOT json.Encoder.Encode: Encode appends a newline of its own,
+// which would end the data line early and hand the client an event whose
+// payload is an empty string — parsed inside a bare catch, so silently.
+func writeStatsFrame(w io.Writer, rc *http.ResponseController, s statsDTO) error {
+	payload, marshalErr := json.Marshal(s)
+	if marshalErr != nil {
+		return marshalErr
+	}
+
+	frame := make([]byte, 0, len(sseFramePrefix)+len(payload)+len(sseFrameSuffix))
+	frame = append(frame, sseFramePrefix...)
+	frame = append(frame, payload...)
+	frame = append(frame, sseFrameSuffix...)
+
+	if _, writeErr := w.Write(frame); writeErr != nil {
+		return writeErr
+	}
+	// A flush failure ends the stream: a client that cannot be flushed to is
+	// gone, and with WriteTimeout 0 on the API server nothing else would ever
+	// notice.
+	return rc.Flush()
+}
+
+// writeHeartbeat writes the comment frame and flushes it.
+func writeHeartbeat(w io.Writer, rc *http.ResponseController) error {
+	if _, writeErr := io.WriteString(w, sseHeartbeat); writeErr != nil {
+		return writeErr
+	}
+	return rc.Flush()
 }

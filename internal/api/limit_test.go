@@ -69,6 +69,38 @@ func do(t *testing.T, h http.Handler, method, target, peer string, headers map[s
 	return rec
 }
 
+// doSSE drives one GET /api/events whose context is ALREADY canceled.
+//
+// Task 18 replaced the /api/events placeholder with a real streaming handler
+// whose only termination signal is r.Context().Done(), so `do` — which uses
+// context.Background() — would block this test goroutine forever. Canceling up
+// front still charges the SSE bucket, still admits (and immediately releases) a
+// hub slot, and still writes the response head, which is everything the
+// limiter tests assert on. It also means the per-IP CONCURRENCY cap can never
+// interfere with a per-MINUTE rate assertion: no two of these overlap in time.
+func doSSE(t *testing.T, h http.Handler, peer string) *httptest.ResponseRecorder {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, pathEvents, nil)
+	req.RemoteAddr = peer
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// exhaustSSE is exhaust for /api/events, driving through doSSE.
+func exhaustSSE(t *testing.T, h http.Handler, peer string) int {
+	t.Helper()
+	for i := range exhaustCap {
+		if doSSE(t, h, peer).Code == http.StatusTooManyRequests {
+			return i
+		}
+	}
+	t.Fatalf("GET %s was never refused within %d requests", pathEvents, exhaustCap)
+	return 0
+}
+
 // exhaust drives requests until one is refused and returns how many were
 // admitted before the refusal. It fails the test if nothing is ever refused.
 func exhaust(t *testing.T, h http.Handler, method, target, peer string, headers map[string]string) int {
@@ -249,7 +281,7 @@ func TestSSERequestDoesNotDecrementTheGeneralBucket(t *testing.T) {
 
 	before := remainingOf(t, do(t, h, http.MethodGet, pathWeather, limitPeerA, nil))
 
-	sse := do(t, h, http.MethodGet, pathEvents, limitPeerA, nil)
+	sse := doSSE(t, h, limitPeerA)
 	if sse.Code == http.StatusTooManyRequests {
 		t.Fatalf("the first SSE request was refused: %d", sse.Code)
 	}
@@ -276,7 +308,7 @@ func TestGeneralRequestDoesNotDecrementTheSSEBucket(t *testing.T) {
 	}
 
 	for i := range sseStreamsPerMin {
-		rec := do(t, h, http.MethodGet, pathEvents, limitPeerA, nil)
+		rec := doSSE(t, h, limitPeerA)
 		if rec.Code == http.StatusTooManyRequests {
 			t.Fatalf("SSE request %d was refused after 10 general requests; the general scope is "+
 				"decrementing the SSE bucket", i)
@@ -287,7 +319,7 @@ func TestGeneralRequestDoesNotDecrementTheSSEBucket(t *testing.T) {
 func TestSSEScopeAllowsThirtyNewStreamsPerMinute(t *testing.T) {
 	h := limitRouter(t, nil)
 
-	admitted := exhaust(t, h, http.MethodGet, pathEvents, limitPeerA, nil)
+	admitted := exhaustSSE(t, h, limitPeerA)
 	if admitted != 30 {
 		t.Fatalf("SSE scope admitted %d new streams before refusing, want exactly 30", admitted)
 	}

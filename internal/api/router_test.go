@@ -57,6 +57,12 @@ func testDeps(t *testing.T) Deps {
 		// 60 is PROOF_RATE_LIMIT_PER_MIN's default, written as a literal here so
 		// a test that cares about the proof scope's number sets its own.
 		ProofRateLimitPerMin: 60,
+
+		// A FRESH hub per Deps, with the contract's caps. Never a package-level
+		// one: the hub holds process-level state and a shared instance is
+		// exactly the cross-test coupling that makes a cap test discriminate
+		// only under a -run filter.
+		Hub: NewHub(sseGlobalMax, sseConcurrentPerIP, discardLogger()),
 	}
 }
 
@@ -76,6 +82,21 @@ func TestNewRouterDoesNotPanicOnRegistration(t *testing.T) {
 func doGet(t *testing.T, h http.Handler, target string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, target, nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// doGetCanceled drives one request whose context is ALREADY canceled. It is
+// the only way to drive the streaming /api/events handler through an
+// http.Handler synchronously: the handler's termination signal is
+// r.Context().Done(), so a background context would hang the caller forever.
+// The limiter, the hub admission and the response head all still run.
+func doGetCanceled(t *testing.T, h http.Handler, target string) *httptest.ResponseRecorder {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
@@ -348,7 +369,7 @@ func TestRouterPatternInventoryIsExactlyTheExpectedSet(t *testing.T) {
 	// that its limiter scope is live. A 404 here would mean an unlimited scope
 	// shipped.
 	placeholders := []string{
-		pathHealth, pathReady, pathEvents,
+		pathHealth, pathReady,
 		"/api/proof/" + strings.Repeat("ab", 32),
 	}
 	for _, target := range placeholders {
@@ -356,6 +377,14 @@ func TestRouterPatternInventoryIsExactlyTheExpectedSet(t *testing.T) {
 		if rec.Code != http.StatusNotImplemented {
 			t.Errorf("%s: got status %d, want 501 (registered, handler pending)", target, rec.Code)
 		}
+	}
+
+	// /api/events now carries a real handler and streams until the client
+	// disconnects, so it cannot be driven with a background context: the
+	// handler would never return. A pre-canceled context makes it answer 200
+	// and unwind immediately, which is still proof the pattern is registered.
+	if rec := doGetCanceled(t, h, pathEvents); rec.Code != http.StatusOK {
+		t.Errorf("%s: got status %d, want 200", pathEvents, rec.Code)
 	}
 
 	unregistered := []string{"/api", "/api/weather/x/y", "/apiweather", "/API/weather"}

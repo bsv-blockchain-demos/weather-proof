@@ -1,12 +1,24 @@
 package api
 
 import (
+	"bufio"
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/bsv-blockchain-demos/weather-proof/internal/config"
+	"github.com/bsv-blockchain-demos/weather-proof/internal/store"
+	"github.com/bsv-blockchain-demos/weather-proof/internal/store/fake"
+	"github.com/bsv-blockchain-demos/weather-proof/internal/weather"
 )
 
 // broadcastGuard is the failure-path timeout for "this call must not block".
@@ -467,5 +479,762 @@ func TestHubIsSafeUnderConcurrentRegistersAndBroadcasts(t *testing.T) {
 	h.mu.Unlock()
 	if live != 0 {
 		t.Fatalf("perIPCount retains %d keys after every unregister ran, want 0", live)
+	}
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Task 18: GET /api/events — the wire contract, the first push, the ping,
+// the caps.
+//
+// Every test below runs against a REAL httptest.NewServer and a real reader.
+// An httptest.ResponseRecorder buffers everything and reports success, so it
+// cannot observe a flush, cannot observe frame ORDER over time, and cannot
+// observe a write deadline — which are the properties under test.
+// ───────────────────────────────────────────────────────────────────────────
+
+// sseFixtureStats is the store-level fixture the first push and the golden
+// frame are built from. All four projected values are pairwise distinct and
+// none is 0 or 1, so a projection that swaps two fields, or a handler that
+// emits a zero-valued statsDTO, cannot pass.
+func sseFixtureStats() store.Stats {
+	write := time.Date(2026, 7, 30, 9, 8, 7, 654_000_000, time.UTC)
+	return store.Stats{
+		ActiveStations:  19,
+		TotalTx:         2701,
+		TotalRecords:    51_234,
+		LastRecordWrite: &write,
+	}
+}
+
+// sseBroadcastStats is a SECOND, entirely different fixture, used for the
+// broadcast test. Every field differs from sseFixtureStats, so a handler that
+// replays the first payload on every event fails.
+func sseBroadcastStats() store.Stats {
+	write := time.Date(2026, 7, 31, 1, 2, 3, 4_000_000, time.UTC)
+	return store.Stats{
+		ActiveStations:  23,
+		TotalTx:         3117,
+		TotalRecords:    60_001,
+		LastRecordWrite: &write,
+	}
+}
+
+// fixedStatsStore serves a caller-controlled store.Stats and delegates
+// everything else to the embedded StationStore. It exists because the fake's
+// totalTx / totalRecords counters are only movable through a full
+// insert-claim-complete cycle, which cannot produce four pairwise-distinct
+// values (one Complete call is exactly one tx).
+type fixedStatsStore struct {
+	store.StationStore
+
+	stats store.Stats
+	err   error
+}
+
+func (f *fixedStatsStore) Stats(_ context.Context) (store.Stats, error) {
+	if f.err != nil {
+		return store.Stats{}, f.err
+	}
+	return f.stats, nil
+}
+
+// sseHarness is a real HTTP server carrying the PRODUCTION router, so every
+// test below runs through withRequestID → withSecurityHeaders → withRecover →
+// withWriteDeadline → the SSE limiter → markSSEExempt → handleEvents. Testing
+// handleEvents in isolation would not catch a missing markSSEExempt at the
+// registration site, which is the defect that kills every stream at 30 s.
+type sseHarness struct {
+	srv *httptest.Server
+	hub *Hub
+}
+
+func newSSEHarness(t *testing.T, mutate func(d *Deps)) *sseHarness {
+	t.Helper()
+	d := testDeps(t)
+	d.Logger = discardLogger()
+	if mutate != nil {
+		mutate(&d)
+	}
+	srv := httptest.NewServer(NewRouter(d))
+	t.Cleanup(srv.Close)
+	return &sseHarness{srv: srv, hub: d.Hub}
+}
+
+// withFixedStats returns a Deps mutator replacing only the Stations seam's
+// Stats, leaving List and Get on the fake.
+func withFixedStats(s store.Stats) func(d *Deps) {
+	return func(d *Deps) {
+		d.Store.Stations = &fixedStatsStore{StationStore: d.Store.Stations, stats: s}
+	}
+}
+
+// sseConn is one open stream plus a goroutine that parses frames off it as
+// they arrive. The goroutine is what makes every assertion below a channel
+// receive with a failure-path timeout rather than a sleep.
+type sseConn struct {
+	resp   *http.Response
+	frames chan string
+	cancel context.CancelFunc
+}
+
+// connect opens one stream. It returns the response head immediately — the
+// handler flushes it before doing anything else — so a refusal (429 / 503) is
+// observable here with its body.
+func (h *sseHarness) connect(t *testing.T, headers map[string]string) *sseConn {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, h.srv.URL+pathEvents, nil)
+	if reqErr != nil {
+		cancel()
+		t.Fatalf("new request: %v", reqErr)
+	}
+	for name, value := range headers {
+		req.Header.Set(name, value)
+	}
+	// Do is driven on its own goroutine with a bounded wait, because it does
+	// not return until the response HEAD reaches the client — and the head only
+	// reaches the client if the handler flushed it. Calling Do inline would turn
+	// a missing flush into a whole-suite timeout panic naming nothing; this
+	// turns it into a named failure on the test that connected.
+	type result struct {
+		resp *http.Response
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		resp, doErr := h.srv.Client().Do(req)
+		if doErr != nil {
+			done <- result{err: doErr}
+			return
+		}
+		select {
+		case done <- result{resp: resp}:
+			// The caller now owns the body and registers its Close in a
+			// t.Cleanup below.
+		case <-time.After(broadcastGuard):
+			// Nobody is waiting any more — the caller already timed out and
+			// failed the test. Close the body here rather than leaking the
+			// connection for the rest of the run.
+			_ = resp.Body.Close()
+		}
+	}()
+
+	var resp *http.Response
+	select {
+	case got := <-done:
+		if got.err != nil {
+			cancel()
+			t.Fatalf("GET %s: %v", pathEvents, got.err)
+		}
+		resp = got.resp
+	case <-time.After(broadcastGuard):
+		cancel()
+		t.Fatalf("timed out waiting for the %s response head: the handler never flushed it", pathEvents)
+	}
+	c := &sseConn{resp: resp, frames: make(chan string, 64), cancel: cancel}
+	t.Cleanup(func() {
+		cancel()
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			_ = closeErr
+		}
+	})
+	if resp.StatusCode == http.StatusOK {
+		go c.read()
+	}
+	return c
+}
+
+// read pushes one string per SSE frame — every byte up to and including the
+// blank line that terminates it — and closes the channel when the stream ends.
+func (c *sseConn) read() {
+	defer close(c.frames)
+	br := bufio.NewReader(c.resp.Body)
+	for {
+		frame, readErr := readSSEFrame(br)
+		if frame != "" {
+			c.frames <- frame
+		}
+		if readErr != nil {
+			return
+		}
+	}
+}
+
+// readSSEFrame reads one frame VERBATIM, blank-line terminator included. It
+// does not normalize anything: the terminator and the exact field-line bytes
+// are what the assertions are about.
+func readSSEFrame(br *bufio.Reader) (string, error) {
+	var sb strings.Builder
+	for {
+		line, readErr := br.ReadString('\n')
+		sb.WriteString(line)
+		if readErr != nil {
+			return sb.String(), readErr
+		}
+		if line == "\n" {
+			return sb.String(), nil
+		}
+	}
+}
+
+// next returns the next frame, failing on a timeout or a closed stream. The
+// timeout is a failure path only — it is never used to sequence anything.
+func (c *sseConn) next(t *testing.T) string {
+	t.Helper()
+	select {
+	case frame, ok := <-c.frames:
+		if !ok {
+			t.Fatal("the stream ended before a frame arrived")
+		}
+		return frame
+	case <-time.After(broadcastGuard):
+		t.Fatal("timed out waiting for an SSE frame")
+		return ""
+	}
+}
+
+// nextStatsFrame returns the next frame that is not a heartbeat comment. Only
+// the tests that shorten the heartbeat interval can see a ping at all.
+func (c *sseConn) nextStatsFrame(t *testing.T) string {
+	t.Helper()
+	for {
+		frame := c.next(t)
+		if !strings.HasPrefix(frame, ":") {
+			return frame
+		}
+	}
+}
+
+// parsedFrame is a frame decomposed by an SSE parser rather than by substring
+// matching. A `strings.Contains(body, "stats_update")` assertion passes on a
+// frame no EventSource would ever dispatch.
+type parsedFrame struct {
+	raw     string
+	event   string
+	data    string
+	comment string
+}
+
+// parseSSEFrame decomposes one frame and asserts its structural invariants:
+// it must end with the blank line, and it must carry no bare CR.
+func parseSSEFrame(t *testing.T, raw string) parsedFrame {
+	t.Helper()
+	if !strings.HasSuffix(raw, sseFrameSuffix) {
+		t.Fatalf("frame is not terminated by a blank line, so no client would ever dispatch it: %q", raw)
+	}
+	out := parsedFrame{raw: raw}
+	for _, line := range strings.Split(strings.TrimSuffix(raw, sseFrameSuffix), "\n") {
+		switch {
+		case strings.HasPrefix(line, ":"):
+			out.comment = strings.TrimPrefix(line, ":")
+		case strings.HasPrefix(line, "event: "):
+			out.event = strings.TrimPrefix(line, "event: ")
+		case strings.HasPrefix(line, "data: "):
+			out.data = strings.TrimPrefix(line, "data: ")
+		}
+	}
+	return out
+}
+
+// wireStats is statsDTO as a CLIENT sees it: the same four json keys, with
+// the timestamp as a plain string.
+//
+// The brief asked for the data line to be unmarshaled "into a statsDTO", and
+// that fixture is not implementable as written: isoMillis is marshal-ONLY (it
+// has MarshalJSON and deliberately no UnmarshalJSON, because nothing in this
+// app ever parses one back), so json.Unmarshal into a statsDTO fails on the
+// lastRecordWrite field for EVERY input including a perfectly correct one —
+// the assertion could never pass, let alone discriminate. This mirror type is
+// the replacement: it round-trips the wire shape, keeps all four keys, and is
+// deep-equal comparable against an expected value built WITHOUT toStats.
+type wireStats struct {
+	ActiveStations  int64   `json:"activeStations"`
+	TotalTx         int64   `json:"totalTx"`
+	LastRecordWrite *string `json:"lastRecordWrite"`
+	TotalDataPoints int64   `json:"totalDataPoints"`
+}
+
+// wantStats is the wireStats a store.Stats fixture must project to. Every
+// value is computed here from the fixture rather than by calling toStats or
+// isoPtr, so a broken projection cannot satisfy the assertion by mutating both
+// sides of it.
+func wantStats(t *testing.T, s store.Stats) wireStats {
+	t.Helper()
+	out := wireStats{
+		ActiveStations:  s.ActiveStations,
+		TotalTx:         s.TotalTx,
+		TotalDataPoints: s.TotalRecords * weather.DataFieldsPerRecord,
+	}
+	if s.LastRecordWrite != nil {
+		stamp := s.LastRecordWrite.UTC().Format("2006-01-02T15:04:05.000Z")
+		out.LastRecordWrite = &stamp
+	}
+	return out
+}
+
+// decodeStatsData parses a frame's data line. It first asserts all four keys
+// are PRESENT — a payload missing lastRecordWrite would otherwise decode
+// cleanly into a nil pointer and compare equal to an expected nil.
+func decodeStatsData(t *testing.T, frame parsedFrame) wireStats {
+	t.Helper()
+	var keys map[string]json.RawMessage
+	if keysErr := json.Unmarshal([]byte(frame.data), &keys); keysErr != nil {
+		t.Fatalf("data line %q is not a JSON object: %v", frame.data, keysErr)
+	}
+	for _, key := range []string{"activeStations", "totalTx", "lastRecordWrite", "totalDataPoints"} {
+		if _, ok := keys[key]; !ok {
+			t.Fatalf("data line %q is missing the %q key", frame.data, key)
+		}
+	}
+	var got wireStats
+	if unmarshalErr := json.Unmarshal([]byte(frame.data), &got); unmarshalErr != nil {
+		t.Fatalf("data line %q does not unmarshal into the wire stats shape: %v", frame.data, unmarshalErr)
+	}
+	return got
+}
+
+// setShortHeartbeat shortens the comment-frame period so the ping is
+// observable in milliseconds instead of 30 seconds, restoring it afterwards.
+func setShortHeartbeat(t *testing.T) time.Duration {
+	t.Helper()
+	original := sseHeartbeatInterval
+	short := 50 * time.Millisecond
+	sseHeartbeatInterval = short
+	t.Cleanup(func() { sseHeartbeatInterval = original })
+	return short
+}
+
+func TestEventsSetsTheStreamingHeaders(t *testing.T) {
+	h := newSSEHarness(t, withFixedStats(sseFixtureStats()))
+	c := h.connect(t, nil)
+
+	if c.resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", c.resp.StatusCode)
+	}
+	if got := c.resp.Header.Get(headerContentType); got != sseContentType {
+		t.Errorf("%s = %q, want %q", headerContentType, got, sseContentType)
+	}
+	if got := c.resp.Header.Get(headerCacheControl); got != sseCacheControl {
+		t.Errorf("%s = %q, want %q", headerCacheControl, got, sseCacheControl)
+	}
+	if got := c.resp.Header.Get(headerConnection); got != sseConnection {
+		t.Errorf("%s = %q, want %q", headerConnection, got, sseConnection)
+	}
+	if got := c.resp.Header.Get(sseAccelBuffer); got != sseAccelBufferOff {
+		t.Errorf("%s = %q, want %q", sseAccelBuffer, got, sseAccelBufferOff)
+	}
+}
+
+// TestEventsWritesOneStatsUpdateImmediatelyOnConnect never calls Broadcast, so
+// a handler that only writes on a broadcast cannot pass it (spec §13.7: the
+// tiles must populate without waiting).
+func TestEventsWritesOneStatsUpdateImmediatelyOnConnect(t *testing.T) {
+	want := sseFixtureStats()
+	h := newSSEHarness(t, withFixedStats(want))
+	c := h.connect(t, nil)
+
+	frame := parseSSEFrame(t, c.next(t))
+	if frame.event != sseEventName {
+		t.Fatalf("first frame event = %q, want %q; raw=%q", frame.event, sseEventName, frame.raw)
+	}
+	if got, expected := decodeStatsData(t, frame), wantStats(t, want); !reflect.DeepEqual(got, expected) {
+		t.Fatalf("first push payload = %+v, want %+v", got, expected)
+	}
+}
+
+func TestEventsEventNameIsExactlyStatsUpdate(t *testing.T) {
+	h := newSSEHarness(t, withFixedStats(sseFixtureStats()))
+	c := h.connect(t, nil)
+
+	raw := c.next(t)
+	if !strings.Contains(raw, "event: "+sseEventName+"\n") {
+		t.Fatalf("frame carries no %q line: %q", "event: "+sseEventName, raw)
+	}
+	// Each negative form is a plausible typo and each silently breaks the
+	// client: EventSource dispatches on the exact field value.
+	for _, wrong := range []string{"event: message", "event: stats-update", "event:" + sseEventName} {
+		if strings.Contains(raw, wrong) {
+			t.Errorf("frame contains %q, which no listener is registered for: %q", wrong, raw)
+		}
+	}
+}
+
+func TestEventsDataIsASingleLineOfValidJSON(t *testing.T) {
+	h := newSSEHarness(t, withFixedStats(sseFixtureStats()))
+	c := h.connect(t, nil)
+
+	frame := parseSSEFrame(t, c.next(t))
+	if frame.data == "" {
+		t.Fatalf("frame carries no data line: %q", frame.raw)
+	}
+	if strings.Contains(frame.data, "\n") {
+		t.Fatalf("data line contains an embedded newline, which ends the frame early: %q", frame.data)
+	}
+	decodeStatsData(t, frame)
+}
+
+func TestEventsFrameEndsWithABlankLine(t *testing.T) {
+	h := newSSEHarness(t, withFixedStats(sseFixtureStats()))
+	c := h.connect(t, nil)
+
+	raw := c.next(t)
+	if !strings.HasSuffix(raw, sseFrameSuffix) {
+		t.Fatalf("frame does not end with a blank line, so the client never dispatches it: %q", raw)
+	}
+	// The blank line must be the ONLY blank line: an extra one before the data
+	// field would dispatch an event with an empty payload.
+	if strings.Contains(strings.TrimSuffix(raw, sseFrameSuffix), sseFrameSuffix) {
+		t.Fatalf("frame contains a blank line before its terminator: %q", raw)
+	}
+
+	// And there must be no terminator too many. json.Encoder.Encode appends a
+	// newline of its own, which turns the frame's tail into "\n\n\n" — the
+	// frame itself still parses, but the extra byte becomes an EMPTY frame that
+	// desynchronizes every subsequent event on the stream. Checked here rather
+	// than on the data line, because as a parser sees it the stray newline
+	// lands outside the data field, not inside it.
+	if n := h.hub.Broadcast(toStats(sseBroadcastStats())); n != 1 {
+		t.Fatalf("Broadcast delivered to %d clients, want 1", n)
+	}
+	// An EMPTY frame is a lone terminator line: everything before the blank
+	// line is nothing at all.
+	if next := c.next(t); strings.TrimLeft(next, "\n") == "" {
+		t.Fatalf("the frame is followed by an EMPTY frame (%q), so the stream is one terminator out of step: %q", next, raw)
+	}
+}
+
+func TestEventsWritesASubsequentBroadcast(t *testing.T) {
+	h := newSSEHarness(t, withFixedStats(sseFixtureStats()))
+	c := h.connect(t, nil)
+
+	first := decodeStatsData(t, parseSSEFrame(t, c.next(t)))
+
+	later := wantStats(t, sseBroadcastStats())
+	if reflect.DeepEqual(first, later) {
+		t.Fatal("the two fixtures are equal, so this test could not detect a replayed payload")
+	}
+	if n := h.hub.Broadcast(toStats(sseBroadcastStats())); n != 1 {
+		t.Fatalf("Broadcast delivered to %d clients, want 1", n)
+	}
+
+	second := decodeStatsData(t, parseSSEFrame(t, c.nextStatsFrame(t)))
+	if !reflect.DeepEqual(second, later) {
+		t.Fatalf("second frame payload = %+v, want the broadcast value %+v", second, later)
+	}
+}
+
+func TestEventsWritesAPingCommentAndItIsNotAStatsUpdate(t *testing.T) {
+	setShortHeartbeat(t)
+	h := newSSEHarness(t, withFixedStats(sseFixtureStats()))
+	c := h.connect(t, nil)
+
+	// Frame 1 is the first push; the ping is whatever comes next, with no
+	// broadcast in between.
+	c.next(t)
+
+	ping := c.next(t)
+	if ping != sseHeartbeat {
+		t.Fatalf("heartbeat frame = %q, want exactly %q", ping, sseHeartbeat)
+	}
+	// Spec §13.7: the client JSON.parses every stats_update inside a bare
+	// catch, so a heartbeat shaped like one is invisible breakage.
+	if strings.Contains(ping, sseEventName) {
+		t.Fatalf("the heartbeat is a %s frame: %q", sseEventName, ping)
+	}
+}
+
+// TestEventsFlushesPerWrite reads the first frame with the connection still
+// OPEN. That is the flush assertion in its only honest form: net/http buffers
+// the response, so without a Flush the read blocks until the handler returns
+// and this test times out.
+func TestEventsFlushesPerWrite(t *testing.T) {
+	h := newSSEHarness(t, withFixedStats(sseFixtureStats()))
+	c := h.connect(t, nil)
+
+	frame := parseSSEFrame(t, c.next(t))
+	if frame.event != sseEventName {
+		t.Fatalf("first flushed frame event = %q, want %q", frame.event, sseEventName)
+	}
+	// The stream must still be open: a frame that only became readable because
+	// the handler returned would prove nothing about flushing.
+	if h.hub.Clients() != 1 {
+		t.Fatalf("hub Clients() = %d after the first frame, want 1 (the handler must still be running)", h.hub.Clients())
+	}
+}
+
+func TestEventsReturnsWhenTheClientDisconnects(t *testing.T) {
+	h := newSSEHarness(t, withFixedStats(sseFixtureStats()))
+	c := h.connect(t, nil)
+
+	// Liveness first: without this the "reaches 0" assertion below holds
+	// vacuously against a handler that never registered at all.
+	c.next(t)
+	if got := h.hub.Clients(); got != 1 {
+		t.Fatalf("hub Clients() = %d with one open stream, want 1", got)
+	}
+
+	c.cancel()
+	waitForClients(t, h.hub, 0)
+}
+
+// waitForClients polls the hub's count until it reaches want, failing on a
+// bounded timeout. Polling is unavoidable here: the handler's unregister runs
+// on the SERVER's goroutine after the client's context propagates, and the hub
+// exposes no notification seam. The poll interval is a small fraction of the
+// failure timeout, so this is a bounded wait and not a sleep-as-synchronization.
+func waitForClients(t *testing.T, h *Hub, want int) {
+	t.Helper()
+	deadline := time.Now().Add(broadcastGuard)
+	for time.Now().Before(deadline) {
+		if got := h.Clients(); got == want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("hub Clients() = %d after %v, want %d: the handler leaked its slot", h.Clients(), broadcastGuard, want)
+}
+
+// TestEventsRefusesTheThirteenthConcurrentStreamFromOneIP drives spec §6.1's
+// per-IP concurrency cap. It asserts the DISTINCT hub message rather than the
+// limiter's, so a 429 from the 30/min rate scope could not satisfy it.
+func TestEventsRefusesTheThirteenthConcurrentStreamFromOneIP(t *testing.T) {
+	h := newSSEHarness(t, withFixedStats(sseFixtureStats()))
+
+	conns := make([]*sseConn, 0, sseConcurrentPerIP)
+	for i := range sseConcurrentPerIP {
+		c := h.connect(t, nil)
+		if c.resp.StatusCode != http.StatusOK {
+			t.Fatalf("stream %d: status = %d, want 200", i, c.resp.StatusCode)
+		}
+		conns = append(conns, c)
+	}
+
+	refused := h.connect(t, nil)
+	if refused.resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("stream %d: status = %d, want 429", sseConcurrentPerIP+1, refused.resp.StatusCode)
+	}
+	assertRefusalBody(t, refused, msgTooManyStreams, false)
+
+	// The twelve incumbents must still be open — the hub refuses, it never
+	// evicts — and every one of them must still receive.
+	if got := h.hub.Clients(); got != sseConcurrentPerIP {
+		t.Fatalf("hub Clients() = %d after the refusal, want %d", got, sseConcurrentPerIP)
+	}
+	if n := h.hub.Broadcast(toStats(sseBroadcastStats())); n != sseConcurrentPerIP {
+		t.Fatalf("Broadcast reached %d incumbents, want %d", n, sseConcurrentPerIP)
+	}
+	for i, c := range conns {
+		if frame := parseSSEFrame(t, c.nextStatsFrame(t)); frame.event != sseEventName {
+			t.Fatalf("incumbent %d: event = %q, want %q", i, frame.event, sseEventName)
+		}
+	}
+}
+
+// TestEventsAnswersFiveHundredThreeAtTheGlobalCap uses THREE DISTINCT peers,
+// so the per-IP cap cannot be what refused the third, and asserts 503 rather
+// than 429 — the status is the only thing that tells an operator which cap
+// fired.
+func TestEventsAnswersFiveHundredThreeAtTheGlobalCap(t *testing.T) {
+	const globalMax = 2
+
+	h := newSSEHarness(t, func(d *Deps) {
+		d.Hub = NewHub(globalMax, sseConcurrentPerIP, discardLogger())
+		d.Trusted = trustLoopback(t)
+		d.Store.Stations = &fixedStatsStore{StationStore: d.Store.Stations, stats: sseFixtureStats()}
+	})
+
+	// Distinct keys over one loopback socket: the peer is trusted, so
+	// CF-Connecting-IP is honored (and is the only header consulted).
+	for i, peer := range []string{"198.51.100.1", "198.51.100.2"} {
+		c := h.connect(t, map[string]string{headerCFConnectingIP: peer})
+		if c.resp.StatusCode != http.StatusOK {
+			t.Fatalf("stream %d from %s: status = %d, want 200", i, peer, c.resp.StatusCode)
+		}
+	}
+
+	refused := h.connect(t, map[string]string{headerCFConnectingIP: "198.51.100.3"})
+	if refused.resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("the third stream from a third peer: status = %d, want 503", refused.resp.StatusCode)
+	}
+	assertRefusalBody(t, refused, msgStreamCapacityReached, true)
+}
+
+// headerCFConnectingIP is the trusted-peer forwarding header the resolver
+// consults first. It is declared here rather than imported because
+// internal/ratelimit keeps its own copy unexported.
+const headerCFConnectingIP = "CF-Connecting-IP"
+
+// trustLoopback trusts 127.0.0.0/8, which is what makes an httptest client's
+// CF-Connecting-IP readable and therefore what lets one loopback socket stand
+// in for distinct peers.
+func trustLoopback(t *testing.T) config.TrustedProxies {
+	t.Helper()
+	trusted, parseErr := config.ParseCIDRList([]string{"127.0.0.0/8"})
+	if parseErr != nil {
+		t.Fatalf("ParseCIDRList: %v", parseErr)
+	}
+	return trusted
+}
+
+// assertRefusalBody checks the refusal is the package's standard JSON error
+// shape with the expected message — not an empty body and not a stream that
+// opened anyway. withRequestID is present on a 5xx and absent below it.
+func assertRefusalBody(t *testing.T, c *sseConn, wantMsg string, wantRequestID bool) {
+	t.Helper()
+	if got := c.resp.Header.Get(headerContentType); got != contentTypeJSON {
+		t.Errorf("refusal %s = %q, want %q", headerContentType, got, contentTypeJSON)
+	}
+	body, readErr := io.ReadAll(c.resp.Body)
+	if readErr != nil {
+		t.Fatalf("read refusal body: %v", readErr)
+	}
+	var decoded serverErrorDTO
+	if unmarshalErr := json.Unmarshal(body, &decoded); unmarshalErr != nil {
+		t.Fatalf("refusal body %q does not unmarshal: %v", body, unmarshalErr)
+	}
+	if decoded.Error != wantMsg {
+		t.Errorf("refusal error = %q, want %q", decoded.Error, wantMsg)
+	}
+	if wantRequestID && decoded.RequestID == "" {
+		t.Errorf("refusal body carries no request_id: %q", body)
+	}
+	if !wantRequestID && decoded.RequestID != "" {
+		t.Errorf("refusal body carries a request_id on a 4xx: %q", body)
+	}
+}
+
+// TestEventsCarriesTheSecurityHeaders is asserted for this route specifically:
+// the SSE handler is the one that writes its own header block, and therefore
+// the likeliest to bypass withSecurityHeaders.
+func TestEventsCarriesTheSecurityHeaders(t *testing.T) {
+	h := newSSEHarness(t, withFixedStats(sseFixtureStats()))
+	c := h.connect(t, nil)
+
+	for name, want := range map[string]string{
+		headerContentTypeOptions: valueNoSniff,
+		headerFrameOptions:       valueDeny,
+		headerReferrerPolicy:     valueNoReferrer,
+	} {
+		if got := c.resp.Header.Get(name); got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
+}
+
+// TestEventsHasNoWriteDeadline is the BEHAVIORAL half of the §6.0 control-20
+// asymmetry and the pair to Task 14's TestNoWriteDeadlineOnAnSSEExemptHandler:
+// it is what fails if the route loses its markSSEExempt wrapper at the
+// registration site, which nothing else in the package enforces.
+//
+// The elapsed time past the deadline is established by COUNTING HEARTBEATS,
+// not by sleeping: with a 50 ms ping and a 150 ms deadline, four pings mean at
+// least 200 ms of a still-writable stream.
+func TestEventsHasNoWriteDeadline(t *testing.T) {
+	short := setShortWriteDeadline(t)
+	ping := setShortHeartbeat(t)
+
+	h := newSSEHarness(t, withFixedStats(sseFixtureStats()))
+	c := h.connect(t, nil)
+	c.next(t)
+
+	needed := int(short/ping) + 1
+	for i := range needed {
+		if got := c.next(t); got != sseHeartbeat {
+			t.Fatalf("frame %d after the first push = %q, want the heartbeat %q", i, got, sseHeartbeat)
+		}
+	}
+
+	// Well past writeDeadline now. A deadline-bearing stream's flush would
+	// have failed and the handler would have returned.
+	if n := h.hub.Broadcast(toStats(sseBroadcastStats())); n != 1 {
+		t.Fatalf("Broadcast delivered to %d clients past the write deadline, want 1", n)
+	}
+	frame := parseSSEFrame(t, c.nextStatsFrame(t))
+	if frame.event != sseEventName {
+		t.Fatalf("event past the write deadline = %q, want %q", frame.event, sseEventName)
+	}
+}
+
+// TestEventsStatsFailureStillOpensTheStream pins the deliberate decision that
+// a failed stats read omits the first push rather than refusing the
+// connection: the stream's job is to deliver FUTURE updates, and a 500 here
+// would turn a transient DB blip into a dead Live dot until the user reloads.
+func TestEventsStatsFailureStillOpensTheStream(t *testing.T) {
+	h := newSSEHarness(t, func(d *Deps) {
+		s := fake.New()
+		s.FailAll = errors.New("SQLSTATE 42P01: relation \"stations\" does not exist")
+		d.Store.Stations = s.Stations()
+	})
+	c := h.connect(t, nil)
+
+	if c.resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200: a failed stats read must not refuse the stream", c.resp.StatusCode)
+	}
+	if got := c.resp.Header.Get(headerContentType); got != sseContentType {
+		t.Errorf("%s = %q, want %q", headerContentType, got, sseContentType)
+	}
+
+	// The FIRST PUSH is omitted, not sent empty and not sent as a broken
+	// frame. A later broadcast still arrives as frame one.
+	waitForClients(t, h.hub, 1)
+	later := wantStats(t, sseBroadcastStats())
+	if n := h.hub.Broadcast(toStats(sseBroadcastStats())); n != 1 {
+		t.Fatalf("Broadcast delivered to %d clients, want 1", n)
+	}
+	frame := parseSSEFrame(t, c.nextStatsFrame(t))
+	if got := decodeStatsData(t, frame); !reflect.DeepEqual(got, later) {
+		t.Fatalf("the first frame on the wire = %+v, want the broadcast value %+v "+
+			"(an omitted first push, not an empty one)", got, later)
+	}
+}
+
+// TestRegisterRefusalReturnsANilChannelAndANilUnregister pins Task 17's
+// refusal contract, which had no test until Task 18 became its first consumer.
+// handleEvents DEFERS the returned func, so a future change returning a
+// non-nil no-op would let a refusal look like an admission — and a change
+// returning a non-nil CHANNEL would let a refused handler wait on a channel
+// nothing ever sends to.
+func TestRegisterRefusalReturnsANilChannelAndANilUnregister(t *testing.T) {
+	// BOTH refusal branches, because the global cap is checked FIRST: a hub
+	// with globalMax 1 can never reach the per-IP branch at all, so a
+	// single-case version of this test leaves ErrPerIPFull's return statement
+	// completely uncovered — verified by mutating exactly that line.
+	cases := []struct {
+		name      string
+		hub       *Hub
+		wantErr   error
+		otherKeys []string
+	}{
+		{
+			name:    "the global cap",
+			hub:     NewHub(1, 12, discardLogger()),
+			wantErr: ErrHubFull,
+		},
+		{
+			name:    "the per-IP cap",
+			hub:     NewHub(500, 1, discardLogger()),
+			wantErr: ErrPerIPFull,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, admitted, admitErr := tc.hub.Register("a")
+			if admitErr != nil {
+				t.Fatalf("the first Register was refused: %v", admitErr)
+			}
+			defer admitted()
+
+			ch, unregister, refusedErr := tc.hub.Register("a")
+			if !errors.Is(refusedErr, tc.wantErr) {
+				t.Fatalf("the second Register returned %v, want %v — this case is not exercising the branch it names", refusedErr, tc.wantErr)
+			}
+			if ch != nil {
+				t.Error("a refused Register returned a non-nil channel; nothing will ever send to it")
+			}
+			if unregister != nil {
+				t.Error("a refused Register returned a non-nil unregister func; a refusal must not look like an admission, and handleEvents deliberately does not defer it")
+			}
+		})
 	}
 }

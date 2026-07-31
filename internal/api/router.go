@@ -32,6 +32,16 @@ type Deps struct {
 	// so every router owns its own four buckets and no two routers — in
 	// production or across tests — can share limiter state.
 	ProofRateLimitPerMin int
+
+	// Hub is Task 17's SSE fan-out. It is a Deps field rather than a parameter
+	// because BOTH routers read it: NewRouter for GET /api/events, and Task
+	// 20's NewOpsRouter for the sseClients gauge. Two hubs would make the
+	// gauge report a set no stream is registered in.
+	//
+	// A nil Hub is replaced by a fresh one with the contract's caps, so a
+	// caller that forgot to set it gets a working — if unobservable — stream
+	// rather than a nil-pointer panic on the first connection.
+	Hub *Hub
 }
 
 // onlyGET wraps a handler so that any method other than GET answers the JSON
@@ -115,8 +125,17 @@ func NewRouter(d Deps) http.Handler {
 
 	// ── 3. SSE. Its own scope, and markSSEExempt inside the limiter so a 429 —
 	// an ordinary short response — still gets the write deadline while the
-	// stream itself does not. Task 18 replaces the handler here.
-	mux.Handle(pathEvents, withLimit(lim.sse, res)(markSSEExempt(onlyGET(handleNotImplemented))))
+	// stream itself does not.
+	//
+	// markSSEExempt is NOT optional and nothing else enforces it: without the
+	// marker the stream inherits withWriteDeadline's 30 s budget and every
+	// connection dies at 30 seconds with no error anywhere. Pinned
+	// behaviorally by TestEventsHasNoWriteDeadline.
+	hub := d.Hub
+	if hub == nil {
+		hub = NewHub(sseGlobalMax, sseConcurrentPerIP, d.Logger)
+	}
+	mux.Handle(pathEvents, withLimit(lim.sse, res)(markSSEExempt(onlyGET(handleEvents(hub, d.Store.Stations, res)))))
 
 	// ── 4-5. The two scopes whose HANDLERS are B3's. The scopes are wired and
 	// tested now because a scope wired later is a scope that ships unlimited.
