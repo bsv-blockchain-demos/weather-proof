@@ -65,9 +65,11 @@ type Resolver struct {
 // NEVER take X-Forwarded-For[0] blindly: that is both a limiter bypass (a
 // fresh key per request) and the memory-DoS vector for the key map.
 //
-// FAIL CLOSED: a nil Trusted, an empty trust list or an unparseable
-// RemoteAddr all key on the peer address, which degrades to one bucket per
-// proxy pod — safe, and loud because of config's boot WARN.
+// FAIL CLOSED: a nil Trusted or an empty trust list keys on the peer address,
+// which degrades to one bucket per proxy pod — safe, and loud because of
+// config's boot WARN. An unparseable RemoteAddr is not an address at all and
+// so cannot be keyed on: it gets the single constant unparseablePeerKey
+// bucket, and no header is read for it either.
 func (res Resolver) Key(r *http.Request) string {
 	peer, ok := parseHost(r.RemoteAddr)
 	if !ok {
@@ -77,6 +79,8 @@ func (res Resolver) Key(r *http.Request) string {
 		return canonicalKey(peer)
 	}
 
+	// An unparseable CF-Connecting-IP falls through to X-Forwarded-For and then
+	// to the peer, rather than becoming a key: a non-address is never a key.
 	if cf, cfOK := parseHost(strings.TrimSpace(r.Header.Get(headerCFConnectingIP))); cfOK {
 		return canonicalKey(cf)
 	}
@@ -125,6 +129,14 @@ func (res Resolver) rightmostUntrustedHop(header string) (netip.Addr, bool) {
 
 // parseHost accepts either "host:port" or a bare host — a portless RemoteAddr
 // is legal on some transports — and parses it as an address.
+//
+// A BRACKETED IPv6 with no port ("[2001:db8::1]") is deliberately not accepted:
+// SplitHostPort rejects it and ParseAddr rejects the brackets, so it reports
+// false. As a RemoteAddr that means the unparseablePeerKey bucket and as an XFF
+// hop it means the hop is skipped — in both directions such a client merges
+// into a shared bucket rather than getting one of its own, which is the safe
+// direction. Unbracketing here would mean accepting attacker-shaped syntax from
+// a header, which is the opposite direction.
 func parseHost(raw string) (netip.Addr, bool) {
 	if raw == "" {
 		return netip.Addr{}, false
@@ -149,6 +161,12 @@ func parseHost(raw string) (netip.Addr, bool) {
 // /64 prefix. The /64 is not cosmetic: a single residential IPv6 allocation is
 // commonly a /64 or shorter, so keying on the full 128 bits gives one client
 // 2^64 buckets.
+//
+// The Unmap here is a SECOND, independent requirement from the one in trusts:
+// without it a mapped address is not Is4, so ::ffff:198.51.100.9 would render
+// as the /64 "::/64" and EVERY mapped IPv4 client would share one bucket. That
+// is precisely the httprate.CanonicalizeIP defect the Global Constraints forbid
+// by name. Pinned by TestKeyUnmapsAFourInSixKeyFromAnUntrustedPeer.
 func canonicalKey(addr netip.Addr) string {
 	addr = addr.Unmap()
 	if addr.Is4() {

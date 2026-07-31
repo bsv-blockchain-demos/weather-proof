@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -174,6 +175,51 @@ func TestKeyTrustsAFourInSixMappedPeer(t *testing.T) {
 	}
 }
 
+// TestKeyUnmapsAFourInSixKeyFromAnUntrustedPeer pins the Unmap inside
+// canonicalKey, which is a SEPARATE requirement from the one in the trust check
+// that TestKeyTrustsAFourInSixMappedPeer covers. Without it a mapped address is
+// not Is4 and renders as the /64 "::/64", so every 4-in-6 client on a
+// dual-stack listener shares one bucket — the httprate.CanonicalizeIP defect in
+// assertion form. The peer here is UNTRUSTED, so the trust-check Unmap cannot
+// mask the result.
+func TestKeyUnmapsAFourInSixKeyFromAnUntrustedPeer(t *testing.T) {
+	res := Resolver{Trusted: trustList(t, testTrustedCIDR)}
+	got := res.Key(req(t, "[::ffff:198.51.100.9]:1", nil))
+	if got != "198.51.100.9" {
+		t.Fatalf("Key() = %q, want the dotted-quad 198.51.100.9", got)
+	}
+	if strings.Contains(got, ":") {
+		t.Fatalf("Key() = %q, want an IPv4-shaped key: an IPv6-shaped one collapses every mapped client into one bucket", got)
+	}
+
+	// And it must still be a bucket of its OWN: a second mapped client at a
+	// different address cannot land in the same one.
+	other := res.Key(req(t, "[::ffff:198.51.100.10]:1", nil))
+	if other == got {
+		t.Fatalf("two distinct 4-in-6 clients both keyed as %q", got)
+	}
+}
+
+// TestKeyFallsThroughAGarbageCFConnectingIPToXForwardedFor pins the stated
+// decision that an unparseable header value is never a key: it is skipped, and
+// resolution continues down the same ordered list.
+func TestKeyFallsThroughAGarbageCFConnectingIPToXForwardedFor(t *testing.T) {
+	res := Resolver{Trusted: trustList(t, testTrustedCIDR)}
+	got := res.Key(req(t, testTrustedPeer, map[string]string{
+		testCFHeader:  "not-an-ip",
+		testXFFHeader: testClientIP + ", 10.0.0.9",
+	}))
+	if got != testClientIP {
+		t.Fatalf("Key() = %q, want the XFF hop %q after a garbage CF-Connecting-IP", got, testClientIP)
+	}
+
+	// With no usable XFF either, it falls through once more to the peer.
+	peerKey := res.Key(req(t, testTrustedPeer, map[string]string{testCFHeader: "not-an-ip"}))
+	if peerKey != testTrustedHost {
+		t.Fatalf("Key() = %q, want the peer %q when neither header is usable", peerKey, testTrustedHost)
+	}
+}
+
 func TestKeyCanonicalizesIPv6ToASlash64(t *testing.T) {
 	res := Resolver{Trusted: trustList(t, testTrustedCIDR)}
 	first := res.Key(req(t, "[2001:db8::1]:1", nil))
@@ -269,6 +315,111 @@ func TestAllowCountsBurstOnTopOfTheLimit(t *testing.T) {
 	}
 	if d := l.Allow("a"); d.OK {
 		t.Fatal("call 8 allowed, want refused")
+	}
+}
+
+// TestAllowLimitIsTheSumOfLimitAndBurst pins the ruling that burst is a
+// permanent capacity add-on and that Decision.Limit advertises the total. Every
+// expected value is a LITERAL: New(600, 120, …) advertises 720, which is what
+// Task 16's general scope will put in RateLimit-Limit.
+func TestAllowLimitIsTheSumOfLimitAndBurst(t *testing.T) {
+	clock := newClock()
+	l := New(5, 2, time.Minute, 10, clock.Now)
+
+	first := l.Allow("a")
+	if first.Limit != 7 {
+		t.Fatalf("Limit = %d, want 7 — limit 5 plus burst 2, not the limit alone", first.Limit)
+	}
+	if first.Remaining != 6 {
+		t.Fatalf("Remaining = %d, want 6 — it must count down from the advertised total", first.Remaining)
+	}
+
+	for i := 0; i < 6; i++ {
+		l.Allow("a")
+	}
+	refused := l.Allow("a")
+	if refused.OK {
+		t.Fatal("call 8 allowed, want refused")
+	}
+	if refused.Limit != 7 {
+		t.Fatalf("refused Limit = %d, want 7 on the 429 as well", refused.Limit)
+	}
+
+	// The burst is not a first-window grace: the SECOND window carries the same
+	// total of 7.
+	clock.advance(time.Minute)
+	for i := 0; i < 7; i++ {
+		if d := l.Allow("a"); !d.OK {
+			t.Fatalf("second-window call %d refused, want allowed: burst is not start-of-window-only", i+1)
+		}
+	}
+	if d := l.Allow("a"); d.OK {
+		t.Fatal("second-window call 8 allowed, want refused")
+	}
+
+	// The general scope's numbers, spelled out, so the 720 Task 16 advertises is
+	// pinned here and not only in a doc comment.
+	general := New(600, 120, time.Minute, DefaultMaxKeys, newClock().Now)
+	if d := general.Allow("a"); d.Limit != 720 {
+		t.Fatalf("general scope Limit = %d, want 720", d.Limit)
+	}
+}
+
+// countOf reads a key's raw window count. White-box on purpose: "a refusal does
+// not increment the counter" is invisible through Decision alone, because a
+// fixed window zeroes the count at the boundary either way, so the only honest
+// way to pin the decision is to look at the counter itself.
+func countOf(t *testing.T, l *Limiter, key string) int {
+	t.Helper()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	el, ok := l.entries[key]
+	if !ok {
+		t.Fatalf("key %q is not tracked", key)
+	}
+	w, ok := el.Value.(*window)
+	if !ok {
+		t.Fatalf("key %q holds a %T, want a *window", key, el.Value)
+	}
+	return w.count
+}
+
+// TestAllowRefusalsDoNotExtendTheWindow pins both halves of the fixed-window
+// decision: a refused call neither increments the counter nor moves the window
+// start, so a client hammering a closed window cannot push its own reset out.
+// A sliding window here would mean a retry loop — which is exactly what the
+// SPA's un-throttled 429 handling produces — never draining.
+func TestAllowRefusalsDoNotExtendTheWindow(t *testing.T) {
+	clock := newClock()
+	l := New(2, 0, time.Minute, 10, clock.Now)
+	l.Allow("a")
+	l.Allow("a")
+	if got := countOf(t, l, "a"); got != 2 {
+		t.Fatalf("count = %d after 2 allowed calls, want 2", got)
+	}
+
+	clock.advance(10 * time.Second)
+	for i := 0; i < 5; i++ {
+		refused := l.Allow("a")
+		if refused.OK {
+			t.Fatalf("refusal %d allowed, want refused", i+1)
+		}
+		if refused.ResetAfter != 50*time.Second {
+			t.Fatalf("refusal %d ResetAfter = %v, want 50s — a refusal must not push the reset out", i+1, refused.ResetAfter)
+		}
+	}
+	if got := countOf(t, l, "a"); got != 2 {
+		t.Fatalf("count = %d after 5 refusals, want 2 — a refusal must not increment", got)
+	}
+
+	// The window still opens at its original boundary, 60s after the first hit.
+	clock.advance(50 * time.Second)
+	d := l.Allow("a")
+	if !d.OK {
+		t.Fatal("call at the original boundary refused: the refusals extended the window")
+	}
+	if d.Remaining != 1 {
+		t.Fatalf("Remaining = %d in the new window, want 1", d.Remaining)
 	}
 }
 
