@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -504,4 +505,191 @@ func TestSecurityHeaderValuesAreExact(t *testing.T) {
 	if got := rec.Header().Get(headerReferrerPolicy); got != "no-referrer" {
 		t.Errorf("%s = %q, want %q", headerReferrerPolicy, got, "no-referrer")
 	}
+}
+
+// setShortWriteDeadline shortens the package writeDeadline for the duration
+// of a test, restoring it on cleanup. A 30-second sleep in a unit test is how
+// a suite becomes something nobody runs.
+func setShortWriteDeadline(t *testing.T) time.Duration {
+	t.Helper()
+	original := writeDeadline
+	short := 150 * time.Millisecond
+	writeDeadline = short
+	t.Cleanup(func() { writeDeadline = original })
+	return short
+}
+
+// deadlineProbeHandler writes one byte, flushes it, sleeps past whatever
+// write deadline the caller configured, then writes and flushes a second
+// byte and reports the FLUSH error on result. The second write alone is not
+// enough: net/http buffers small writes, so a one-byte Write can succeed
+// against a full buffer without ever touching the underlying connection,
+// and only Flush forces the actual syscall that the deadline governs.
+func deadlineProbeHandler(sleep time.Duration, result chan<- error) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rc := http.NewResponseController(w)
+		_, _ = w.Write([]byte("a"))
+		_ = rc.Flush()
+		time.Sleep(sleep)
+		_, _ = w.Write([]byte("b"))
+		flushErr := rc.Flush()
+		result <- flushErr
+	}
+}
+
+// getViaClient issues a GET through client using an explicit
+// context-carrying request, rather than http.Get / http.Client.Get: gosec's
+// G107 flags a variable URL passed straight to http.Get, and golangci-lint's
+// noctx rule requires every outbound request to carry a context.
+func getViaClient(client *http.Client, url string) (*http.Response, error) {
+	req, newErr := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	if newErr != nil {
+		return nil, newErr
+	}
+	return client.Do(req)
+}
+
+// drain performs a GET against url and discards the body, tolerating a
+// connection reset caused by a server-side write-deadline expiry: the test
+// cares about the error recorded server-side on the channel, not about the
+// client's view of a deliberately truncated response.
+func drain(url string) {
+	resp, getErr := getViaClient(http.DefaultClient, url)
+	if getErr != nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+}
+
+func TestWriteDeadlineIsSetOnANonSSEHandler(t *testing.T) {
+	short := setShortWriteDeadline(t)
+	result := make(chan error, 1)
+	handler := withWriteDeadline(discardLogger())(deadlineProbeHandler(short+50*time.Millisecond, result))
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	go drain(srv.URL)
+
+	select {
+	case writeErr := <-result:
+		if writeErr == nil {
+			t.Fatal("expected the second write to fail after the deadline, got nil error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the handler's second write")
+	}
+}
+
+func TestNoWriteDeadlineOnAnSSEExemptHandler(t *testing.T) {
+	short := setShortWriteDeadline(t)
+	result := make(chan error, 1)
+	handler := withWriteDeadline(discardLogger())(markSSEExempt(deadlineProbeHandler(short+50*time.Millisecond, result)))
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	go drain(srv.URL)
+
+	select {
+	case writeErr := <-result:
+		if writeErr != nil {
+			t.Fatalf("expected the second write to succeed under the SSE exemption, got %v", writeErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the handler's second write")
+	}
+}
+
+func TestWriteDeadlineDoesNotBreakANormalResponse(t *testing.T) {
+	handler := withWriteDeadline(discardLogger())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	resp, getErr := getViaClient(http.DefaultClient, srv.URL)
+	if getErr != nil {
+		t.Fatalf("GET: %v", getErr)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	body, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		t.Fatalf("read body: %v", readErr)
+	}
+	if string(body) != "ok" {
+		t.Fatalf("body = %q, want %q", body, "ok")
+	}
+}
+
+// TestWriteDeadlineFailureIsNotAFiveHundred drives withWriteDeadline directly
+// against an httptest.ResponseRecorder, which supports neither
+// SetWriteDeadline nor Unwrap. That is the documented, ordinary case for
+// every ResponseRecorder-based unit test in this package, and it must not be
+// treated as a server error.
+func TestWriteDeadlineFailureIsNotAFiveHundred(t *testing.T) {
+	handler := withWriteDeadline(discardLogger())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 despite an unsupported write deadline, got %d", rec.Code)
+	}
+}
+
+// TestSSEExemptFlagDoesNotLeakToTheNextRequest proves the exemption is
+// per-request context state, not a package-level flag: an SSE-exempt request
+// followed by an ordinary request on the SAME client (and, with keep-alive,
+// often the same TCP connection) must still get a deadline on the second
+// request. A package-level bool set by markSSEExempt would leak and silently
+// disable the deadline for every request after the first SSE connection.
+func TestSSEExemptFlagDoesNotLeakToTheNextRequest(t *testing.T) {
+	short := setShortWriteDeadline(t)
+	sseResult := make(chan error, 1)
+	normalResult := make(chan error, 1)
+
+	mux := http.NewServeMux()
+	mux.Handle("/sse", markSSEExempt(deadlineProbeHandler(short+50*time.Millisecond, sseResult)))
+	mux.Handle("/normal", deadlineProbeHandler(short+50*time.Millisecond, normalResult))
+
+	srv := httptest.NewServer(withWriteDeadline(discardLogger())(mux))
+	defer srv.Close()
+
+	client := srv.Client()
+
+	drainWithClient(client, srv.URL+"/sse")
+	select {
+	case writeErr := <-sseResult:
+		if writeErr != nil {
+			t.Fatalf("expected the SSE-exempt request to succeed, got %v", writeErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the SSE-exempt handler")
+	}
+
+	drainWithClient(client, srv.URL+"/normal")
+	select {
+	case writeErr := <-normalResult:
+		if writeErr == nil {
+			t.Fatal("expected the following ordinary request to still get a write deadline, got nil error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the ordinary handler")
+	}
+}
+
+func drainWithClient(client *http.Client, url string) {
+	resp, getErr := getViaClient(client, url)
+	if getErr != nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
 }
