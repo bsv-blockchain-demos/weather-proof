@@ -1,21 +1,21 @@
-# Weather Chain
+# Weather Proof
 
 A full-stack BSV blockchain application that sources live weather data from the Tempest API, stores it immutably on the blockchain as OP_RETURN outputs, and provides a React frontend for browsing and verifying weather records.
 
 ## Features
 
 ### Backend Service
-- **Weather Data Encoding**: Lossless encoding of 33 weather fields using Bitcoin Script
+- **Weather Data Encoding**: A fixed schema for 33 weather fields using Bitcoin Script, with floating-point values rounded to six decimal places
 - **Tempest API Integration**: Automatic polling of weather stations (configurable interval)
 - **Funding Basket**: Hash puzzle UTXOs for transaction fees with auto-refill
 - **MongoDB Queue**: Async processing with failure recovery and retry logic
 - **REST API**: Endpoints for querying weather records and blockchain proofs
-- **Notifications**: Console logging with optional Twilio SMS alerts
+- **Notifications**: Console logging; a Twilio adapter exists but is not selected by the application entry point
 
 ### Frontend Application
 - **Weather Dashboard**: Browse paginated weather records with status filtering
 - **Record Details**: View all 33 weather data fields for each record
-- **Blockchain Verification**: Client-side SPV verification using BEEF proofs
+- **Confirmation Checks**: Backend WhatsOnChain lookups with persisted block heights; a separate BEEF proof endpoint and verification helper are also included
 - **Confirmation Status**: Visual indicators for on-chain confirmation state
 - **Responsive Design**: Mobile-first UI with TailwindCSS
 
@@ -47,48 +47,45 @@ A full-stack BSV blockchain application that sources live weather data from the 
 
 ## Quick Start
 
-### Docker (Recommended)
+Use Node.js 22 and npm, a Tempest API key, MongoDB, and a dedicated funded BSV wallet with a compatible wallet storage service. The verification endpoint persists results inside a MongoDB transaction, so use a replica set or sharded cluster for that feature. Go 1.26.3+ is only needed for the separate encoder package in `internal/weather/`.
 
-```bash
-# Configure environment
-cp .env.docker .env
-# Edit .env and set TEMPEST_API_KEY
+### Local development
 
-# Build and start all services
-make build
-make up
-
-# Create funding basket (one-time)
-make setup
-
-# Access the application
-# Frontend: http://localhost:5173
-# API: http://localhost:3001/api
-```
-
-### Local Development
-
-```bash
-# Install dependencies
+```sh
+git clone https://github.com/bsv-blockchain-demos/weather-proof.git
+cd weather-proof
 npm install
-cd frontend && npm install && cd ..
-
-# Configure environment
+npm --prefix frontend install
 cp .env.example .env
-# Edit .env with your settings
-
-# Start MongoDB (via Docker or local install)
-make dev  # or: mongod
-
-# Create funding basket
-npm run setup
-
-# Start backend
-npm run dev
-
-# Start frontend (in another terminal)
-cd frontend && npm run dev
 ```
+
+Edit `.env` before running the service. Replace the bundled development private key with your own, select the network explicitly, configure its wallet storage URL, and supply `TEMPEST_API_KEY` and `MONGO_URI`. Fund the wallet through its storage provider before creating the funding basket.
+
+```sh
+npm run setup
+npm run dev
+```
+
+`setup` creates funding outputs and spends wallet funds. The backend also checks and refills its funding basket during normal operation.
+
+In a second terminal, from the repository root:
+
+```sh
+npm --prefix frontend run dev
+```
+
+Open [localhost:5173](http://localhost:5173), then select the explorer to browse stations. Vite proxies `/api` to the backend at port 3001. Set `VITE_BSV_NETWORK` in `frontend/.env` to match `BSV_NETWORK`.
+
+### Docker status
+
+The [Compose file](docker-compose.yaml) includes MongoDB, the backend, the frontend and an optional setup service. It needs configuration changes before it is a complete deployment:
+
+- The frontend reads its `VITE_` variables at build time, but Compose currently supplies them at runtime. Its default relative API requests have no reverse proxy in the supplied static server.
+- The backend defaults to `test`, while some other service defaults use `main`. Set the network consistently in both the backend and frontend build.
+- MongoDB is configured as a standalone instance, which does not support the transactions used by `/api/verify`.
+- `make up` starts MongoDB and the backend only. It does not start the frontend.
+
+Use the local workflow above for development. The older Docker guides describe intended workflows and should be read alongside these limitations.
 
 ## Configuration
 
@@ -98,12 +95,12 @@ Copy `.env.example` to `.env` and configure:
 | Variable | Description |
 |----------|-------------|
 | `TEMPEST_API_KEY` | Your Tempest weather API key |
+| `SERVER_PRIVATE_KEY` | Your own server wallet private key in hex. Do not fund the bundled development key. |
 | `MONGO_URI` | MongoDB connection string |
 
 ### Optional (with defaults)
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SERVER_PRIVATE_KEY` | (provided) | BSV wallet private key (hex) |
 | `WALLET_STORAGE_URL` | `https://store-us-1.bsvb.tech` | Wallet storage provider |
 | `BSV_NETWORK` | `test` | Network: `test` or `main` |
 | `POLL_RATE` | `300` | Seconds between weather API polls |
@@ -117,7 +114,7 @@ Copy `.env.example` to `.env` and configure:
 ### Frontend Environment
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `VITE_API_URL` | `http://localhost:3001` | Backend API URL |
+| `VITE_API_URL` | Empty, same origin | Browser-reachable backend origin. Vite proxies `/api` locally when this is unset. |
 | `VITE_BSV_NETWORK` | `test` | BSV network for block explorer links |
 
 ## API Endpoints
@@ -132,6 +129,12 @@ Copy `.env.example` to `.env` and configure:
 
 ### Blockchain Proofs
 - `GET /api/proof/:txid` - Get BEEF proof for verification
+- `POST /api/verify` - Look up confirmation status for `{ txids: string[] }` and persist confirmed block heights
+
+### Stations and live statistics
+- `GET /api/stations` - Paginated station dashboard
+- `GET /api/stations/:stationId` - Station details
+- `GET /api/events` - Server-sent events for live statistics
 
 ## How It Works
 
@@ -156,25 +159,25 @@ Hash puzzle outputs provide transaction funding:
 - Preimages stored in wallet's `customInstructions`
 - Auto-refill when basket drops below threshold
 
-### 4. Blockchain Verification
-The frontend performs client-side SPV verification:
-- Fetches BEEF (Background Evaluation Extended Format) proof from API
-- Verifies merkle path against block headers via WhatsOnChain
-- Displays confirmation status and block height
+### 4. Confirmation checks and proof support
 
-### 5. Confirmation Status
-Records show different states:
-- **Pending Confirmation**: Transaction broadcast but not yet mined
-- **On Chain**: Transaction confirmed with merkle proof available
-- **Verified**: User-triggered verification completed successfully
+The active frontend calls `POST /api/verify`. The backend looks up transaction confirmation status through WhatsOnChain and stores confirmed block heights in MongoDB. The interface's verification button uses this same lookup.
+
+A separate BEEF endpoint and client-side `verifyWeatherProof` helper exist, but the current view does not call that helper. The active UI therefore does not independently perform SPV proof verification or compare a displayed observation against decoded on-chain data.
+
+### 5. Confirmation status
+
+Records show processing status and whether a block height has been returned. A completed queue item means the transaction was processed; it does not by itself mean the transaction is mined. The interface uses the confirmation lookup to update that state.
 
 ## Frontend Features
 
-### Weather List
-- Paginated grid of weather records (12 per page)
-- Filter by status: All, Pending, Processing, Completed, Failed
-- Quick view of temperature, conditions, humidity, and wind
-- Status badges showing processing and confirmation state
+### Explorer
+- `/` presents the project and live statistics
+- `/explorer` lists stations with search, sorting and pagination
+- `/station/:stationId` shows a station's weather records and status filters
+- `/weather/:id` shows a single record and its proof controls
+
+Confirmation lookups establish whether a transaction has been mined. They do not establish whether the original weather observation was accurate.
 
 ### Weather Detail
 - Complete weather data across 6 categories:
@@ -185,13 +188,13 @@ Records show different states:
   - Precipitation
   - Lightning activity
 - Blockchain record information (txid, output index, block height)
-- One-click blockchain verification for confirmed transactions
+- One-click confirmation lookup through the backend
 - Links to block explorer (WhatsOnChain)
 
 ## Project Structure
 
 ```
-weather-chain/
+weather-proof/
 ├── src/                    # Backend source
 │   ├── api/               # Express routes
 │   ├── config/            # Environment configuration
@@ -226,11 +229,18 @@ npm run test:coverage
 npm run test:watch
 ```
 
+The repository also contains a Go implementation of the encoding format, separate from the running TypeScript service:
+
+```sh
+go test ./...
+go build ./...
+```
+
 ## Docker Commands
 
 ```bash
 make build      # Build all images
-make up         # Start all services
+make up         # Start MongoDB and backend only
 make down       # Stop all services
 make setup      # Create funding basket
 make logs       # View logs
@@ -248,6 +258,6 @@ make clean      # Remove volumes and images
 - `ENCODING.md` - Bitcoin Script encoding specification
 - `CONTRIBUTING.md` - Contribution guidelines
 
-## License
+## Licence
 
-Open BSV License
+`package.json` declares `Open BSV License`, but no corresponding licence file is included. The maintainers need to supply and confirm the applicable terms.

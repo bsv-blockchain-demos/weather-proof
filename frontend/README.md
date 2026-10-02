@@ -1,168 +1,74 @@
-# Weather Chain Frontend
+# Weather Proof frontend
 
-React frontend for browsing and verifying weather data stored on the BSV blockchain.
+React and TypeScript interface for browsing weather stations, inspecting recorded observations and checking BSV transaction proofs. It uses Vite, React Query, React Router, Tailwind CSS and `@bsv/sdk`.
 
-## Features
+The [root README](../README.md) covers the backend, Tempest integration and wallet funding.
 
-- **Weather Dashboard**: Browse paginated weather records with filtering
-- **Record Details**: View all 33 weather data fields
-- **Blockchain Verification**: Client-side SPV verification using BEEF proofs
-- **Confirmation Status**: Visual indicators for on-chain confirmation state
-- **Responsive Design**: Mobile-first UI with TailwindCSS
+## Run locally
 
-## Tech Stack
+Use Node.js 22 and npm. Start the backend on port 3001, then run these commands from `frontend/`:
 
-- React 18 with TypeScript
-- Vite for build tooling
-- TanStack React Query for data fetching
-- React Router for navigation
-- TailwindCSS for styling
-- @bsv/sdk for blockchain verification
-
-## Development
-
-### Prerequisites
-
-- Node.js 18+
-- Backend API running on port 3001
-
-### Setup
-
-```bash
-# Install dependencies
+```sh
 npm install
-
-# Start development server
 npm run dev
 ```
 
-The app will be available at http://localhost:5173
+Open [localhost:5173](http://localhost:5173). Vite proxies `/api` to `http://localhost:3001`.
 
-### Environment Variables
+Optional configuration in `frontend/.env`:
 
-Create a `.env` file or set these variables:
+| Variable | Purpose |
+| --- | --- |
+| `VITE_API_URL` | Browser-reachable backend origin. Unset means same-origin `/api` requests, using Vite's proxy during development. |
+| `VITE_BSV_NETWORK` | `main` or `test`, matching the backend. Defaults to `test`; controls proof verification and explorer links. |
 
-```bash
-VITE_API_URL=http://localhost:3001    # Backend API URL
-VITE_BSV_NETWORK=test                  # 'test' or 'main' for explorer links
-```
-
-### Scripts
-
-```bash
-npm run dev      # Start development server with HMR
-npm run build    # Build for production
-npm run preview  # Preview production build
-npm run lint     # Run ESLint
-```
-
-## Project Structure
-
-```
-src/
-├── components/
-│   ├── App.tsx              # Main app with routing
-│   ├── WeatherList.tsx      # Paginated weather grid
-│   ├── WeatherCard.tsx      # Individual weather card
-│   ├── WeatherDetail.tsx    # Full record details
-│   └── VerificationBadge.tsx # Status and verification UI
-├── hooks/
-│   ├── useWeather.ts        # Weather data fetching
-│   └── useVerification.ts   # Blockchain verification
-├── services/
-│   ├── api.ts               # REST API client
-│   └── verify.ts            # BEEF verification logic
-├── types/
-│   └── weather.ts           # TypeScript interfaces
-└── main.tsx                 # Entry point
-```
+Vite embeds these values during the build. Setting them only on a running static-file container does not change an existing bundle.
 
 ## Pages
 
-### Weather List (/)
+| Route | Purpose |
+| --- | --- |
+| `/` | Landing page and live statistics |
+| `/explorer` | Searchable, sortable station dashboard |
+| `/station/:stationId` | Station details and paginated weather records |
+| `/weather/:id` | Observation fields, transaction details and proof verification |
 
-Displays a paginated grid of weather records.
+## Verification
 
-**Features**:
-- Filter by status (All, Pending, Processing, Completed, Failed)
-- 12 records per page with pagination
-- Each card shows: temperature, conditions, feels-like, humidity, wind
-- Status badge indicating processing and confirmation state
+Station record lists call `POST /api/verify` to obtain confirmation status and block heights. The backend queries WhatsOnChain and persists confirmed heights in MongoDB.
 
-### Weather Detail (/weather/:id)
+The detail view's verification button calls the same confirmation endpoint. Although `src/services/verify.ts` contains a BEEF verification helper and the backend exposes `/api/proof/:txid`, the current UI does not call that helper. Its displayed verification state is a backend confirmation lookup, not an independent SPV check or a comparison of the displayed observation with on-chain fields. Confirmation also does not establish the accuracy of the sensor reading.
 
-Shows complete details for a single weather record.
+## Build and serve
 
-**Weather Data Groups**:
-- Temperature: air temp, feels like, dew point, wet bulb temperatures
-- Atmosphere: humidity, pressure (station & sea level), air density
-- Wind: speed, gust, direction (degrees and cardinal)
-- Solar: radiation, UV index, brightness
-- Precipitation: probability, accumulation, duration
-- Lightning: strike counts, distance, timestamps
-
-**Blockchain Info**:
-- Transaction ID (linked to WhatsOnChain)
-- Output index
-- Block height (after verification)
-- Confirmation status
-
-**Verification**:
-- Shows "Pending Confirmation" until transaction is mined
-- "Verify on Blockchain" button appears when confirmed
-- Verification validates merkle proof against chain headers
-
-## Verification Flow
-
-1. When viewing a completed record, the app fetches the BEEF proof from `/api/proof/:txid`
-2. The BEEF is parsed to check if it contains a merkle path (indicates confirmation)
-3. If confirmed, user can click "Verify on Blockchain"
-4. Verification uses WhatsOnChain to validate the merkle proof
-5. Success shows block height; failure shows error message
-
-## API Integration
-
-The frontend communicates with the backend API:
-
-```typescript
-// Fetch weather records with pagination
-GET /api/weather?page=1&limit=12&status=completed
-
-// Fetch single record
-GET /api/weather/:id
-
-// Fetch BEEF proof for verification
-GET /api/proof/:txid
-```
-
-## Styling
-
-Uses TailwindCSS with a clean, minimal design:
-
-- White cards with subtle shadows
-- Indigo accent color for interactive elements
-- Status badges: yellow (pending), blue (processing), green (completed/verified), red (failed)
-- Responsive grid: 1 column mobile, 2 columns tablet, 3 columns desktop
-
-## Building for Production
-
-```bash
+```sh
 npm run build
+npm run preview
 ```
 
-Output is in `dist/` directory. Deploy to any static hosting.
+The build writes `dist/`. A deployment needs a browser-reachable API, matching CORS settings, and a fallback to `index.html` for client-side routes. For an explicit API origin, set `VITE_API_URL` before building. The preview server does not provide the development proxy.
 
-### Docker
+The included Dockerfile serves assets with `serve` on port 3000. It accepts a `VITE_API_URL` build argument:
 
-The included Dockerfile builds and serves via nginx:
-
-```bash
-docker build -t weather-chain-frontend .
-docker run -p 5173:80 weather-chain-frontend
+```sh
+docker build --build-arg VITE_API_URL=http://localhost:3001 -t weather-proof-frontend .
+docker run --rm -p 5173:3000 weather-proof-frontend
 ```
 
-## Related Documentation
+This example targets a backend reachable from the browser at localhost. A remote deployment needs its own API origin. The Dockerfile does not currently expose a `VITE_BSV_NETWORK` build argument; supply that value through Vite's build environment or an appropriate build configuration. `nginx.conf` is not used by this Dockerfile.
 
-- [Main README](../README.md) - Full project documentation
-- [QUICKSTART](../QUICKSTART.md) - Local development setup
-- [DOCKER_QUICKSTART](../DOCKER_QUICKSTART.md) - Docker deployment
+## Source map
+
+- [`src/App.tsx`](src/App.tsx): routes and explorer layout
+- [`src/components/`](src/components/): landing page, station dashboard and record views
+- [`src/hooks/`](src/hooks/): queries, automatic confirmation checks and live statistics
+- [`src/services/api.ts`](src/services/api.ts): backend requests
+- [`src/services/verify.ts`](src/services/verify.ts): BEEF proof verification
+
+## Checks
+
+`npm run build` performs TypeScript compilation and bundling. No automated frontend test script is provided. The lint script exists, but there is no ESLint configuration in this directory or the repository root.
+
+## Licence
+
+See the [root licence note](../README.md#licence).
