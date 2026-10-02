@@ -71,4 +71,4 @@ This example targets a backend reachable from the browser at localhost. A remote
 
 ## Licence
 
-See the [root licence note](../README.md#licence).
+**Open BSV Licence v6.** See [LICENSE.txt](../LICENSE.txt) for the full terms. The licence applies to this project's original code and documentation and restricts use to the BSV blockchain defined in the licence. Third-party code, assets and referenced standards retain their respective terms.

@@ -260,4 +260,4 @@ make clean      # Remove volumes and images
 
 ## Licence
 
-`package.json` declares `Open BSV License`, but no corresponding licence file is included. The maintainers need to supply and confirm the applicable terms.
+**Open BSV Licence v6.** See [LICENSE.txt](LICENSE.txt) for the full terms. The licence applies to this project's original code and documentation and restricts use to the BSV blockchain defined in the licence. Third-party code, assets and referenced standards retain their respective terms.

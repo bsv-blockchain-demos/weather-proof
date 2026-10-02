@@ -22,7 +22,7 @@
     "weather",
     "script"
   ],
-  "license": "Open BSV License",
+  "license": "SEE LICENSE IN LICENSE.txt",
   "dependencies": {
     "@bsv/sdk": "^1.7.0",
     "@bsv/wallet-toolbox-client": "^1.0.0",
