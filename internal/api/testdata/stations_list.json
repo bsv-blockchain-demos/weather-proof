@@ -1,0 +1,60 @@
+{
+  "stats": {
+    "activeStations": 3,
+    "totalTx": 0,
+    "lastRecordWrite": null,
+    "totalDataPoints": 0
+  },
+  "stations": [
+    {
+      "stationId": 5001,
+      "name": "Brix Station",
+      "location": "Bristol Docks",
+      "status": "online",
+      "lastReading": "2026-04-17T15:30:00.000Z",
+      "lastTemp": 21.5,
+      "lastConditions": "Clear",
+      "txRecords": 11,
+      "lastBlockHeight": 879100
+    },
+    {
+      "stationId": 5002,
+      "name": "Yeovil Station",
+      "location": "Yeovil Green",
+      "status": "offline",
+      "lastReading": "2026-04-17T15:24:59.000Z",
+      "lastTemp": 15,
+      "lastConditions": "Cloudy",
+      "txRecords": 22,
+      "lastBlockHeight": null
+    },
+    {
+      "stationId": 5003,
+      "name": "Dover Station",
+      "location": "Dover Cliffs",
+      "status": "offline",
+      "lastReading": "2026-04-17T15:30:00.000Z",
+      "lastTemp": 10,
+      "lastConditions": "Rain",
+      "txRecords": 33,
+      "lastBlockHeight": null
+    },
+    {
+      "stationId": 5004,
+      "name": "Perth Station",
+      "location": "Perth Hills",
+      "status": "offline",
+      "lastReading": null,
+      "lastTemp": null,
+      "lastConditions": "",
+      "txRecords": 44,
+      "lastBlockHeight": null
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 50,
+    "total": 4,
+    "totalPages": 1
+  }
+}

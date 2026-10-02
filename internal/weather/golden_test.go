@@ -17,12 +17,13 @@ import (
 // it just as easily launders a drifting encoder: regenerating the file after an
 // unintended change makes TestGolden pass against the new, wrong bytes.
 //
-// The gate against that is the "Golden file is not stale or laundered" step in
+// The automated gate is the "Goldens are not stale" step in
 // .github/workflows/go.yml, which runs -update and then requires
-// `git diff --exit-code internal/weather/testdata/golden/` to be clean. So a
-// regenerated file only survives CI when it equals what the committed encoder
-// already produced. Deleting or weakening that step removes the only automated
-// protection this file has.
+// `git diff --exit-code internal/weather/testdata/golden/` to be clean — so a
+// STALE golden cannot survive CI. It does NOT catch laundering: regenerating
+// AND committing the new bytes leaves that diff clean, because the committed
+// file then equals current output, which is all the step can observe. The
+// control against laundering is a human reading the golden diff in the PR.
 var updateGolden = flag.Bool("update", false, "rewrite testdata/golden/records.json from the current encoder")
 
 // goldenPath is a string literal, not a value built at run time. That is
